@@ -11,7 +11,7 @@
     "dev": "npm run dev:api",
     "lint": "npm --workspace apps/api run lint",
     "build": "npm --workspace apps/web run build",
-    "start": "npm --workspace apps/api run start"
+    "start": "npm run build && npm --workspace apps/api run start"
   },
   "engines": {
     "node": ">=20.0.0"
