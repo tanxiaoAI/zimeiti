@@ -1,0 +1,17 @@
+{
+  "name": "ai-media-assistant-monorepo",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api": "npm --workspace apps/api run dev",
+    "dev:web": "npm --workspace apps/web run dev",
+    "dev": "npm run dev:api",
+    "lint": "npm --workspace apps/api run lint",
+    "build": "npm --workspace apps/web run build",
+    "start": "npm --workspace apps/api run start"
+  }
+}
+

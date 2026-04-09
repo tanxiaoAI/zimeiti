@@ -1,0 +1,19 @@
+{
+  "name": "ai-media-assistant-api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node src/server.js",
+    "start": "NODE_ENV=production node src/server.js",
+    "lint": "node -c src/server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.8.0",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "multer": "^1.4.5-lts.1",
+    "nanoid": "^5.0.7",
+    "yaml": "^2.5.0",
+    "zod": "^3.23.8"
+  }
+}

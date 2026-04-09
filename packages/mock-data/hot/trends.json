@@ -1,0 +1,27 @@
+{
+  "items": [
+    {
+      "topic": "早C晚A",
+      "hot_score": 92,
+      "trend": "up",
+      "category": "护肤",
+      "updated_at": "2026-04-07T00:00:00Z",
+      "examples": [
+        { "title": "早C晚A真的适合所有人吗？", "url": "https://example.com/note/1", "author": "对标账号A" }
+      ],
+      "angles": ["科普", "避坑", "清单"]
+    },
+    {
+      "topic": "敏感肌修护",
+      "hot_score": 88,
+      "trend": "up",
+      "category": "护肤",
+      "updated_at": "2026-04-07T00:00:00Z",
+      "examples": [
+        { "title": "敏感肌修护的3个误区", "url": "https://example.com/note/2", "author": "对标账号B" }
+      ],
+      "angles": ["避坑", "对比", "挑战"]
+    }
+  ]
+}
+

@@ -1,0 +1,27 @@
+{
+  "items": [
+    {
+      "title": "敏感肌别再乱用烟酰胺：3类人群直接劝退",
+      "angles": ["避坑", "人群边界", "成分科普"],
+      "target_audience": "敏感肌/痘肌人群",
+      "outline": {
+        "type": "xiaohongshu_note",
+        "sections": ["结论先行", "为什么会翻车", "3类人群劝退", "正确用法与替代", "总结+提问互动"]
+      },
+      "difficulty": "中",
+      "materials": ["烟酰胺刺激机制说明", "替代成分清单", "适用肤质表"]
+    },
+    {
+      "title": "早C晚A不是越多越好：我把功课写成一张表",
+      "angles": ["清单", "对比", "科普"],
+      "target_audience": "护肤新手/想建立护肤流程的人",
+      "outline": {
+        "type": "xiaohongshu_note",
+        "sections": ["反常识开头", "C与A分别做什么", "新手搭配表", "常见翻车原因", "总结+互动"]
+      },
+      "difficulty": "低",
+      "materials": ["搭配表", "常见产品类型举例"]
+    }
+  ]
+}
+

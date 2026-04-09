@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1440" viewBox="0 0 1080 1440">
+  <rect width="1080" height="1440" fill="#F2FFF7"/>
+  <text x="90" y="170" font-size="40" font-family="sans-serif" fill="#0F5132">清单卡片</text>
+  <rect x="90" y="230" width="900" height="1050" rx="40" fill="#FFFFFF" stroke="#0F5132" stroke-width="6"/>
+  <text x="150" y="350" font-size="74" font-family="sans-serif" font-weight="800" fill="#111">标题（收藏）</text>
+  <g font-size="46" font-family="sans-serif" fill="#111">
+    <text x="150" y="520">1. 清单项一</text>
+    <text x="150" y="620">2. 清单项二</text>
+    <text x="150" y="720">3. 清单项三</text>
+    <text x="150" y="820">4. 清单项四</text>
+  </g>
+  <rect x="150" y="1160" width="780" height="90" rx="45" fill="#0F5132"/>
+  <text x="540" y="1220" text-anchor="middle" font-size="38" font-family="sans-serif" fill="#fff">建议点赞收藏</text>
+</svg>
+

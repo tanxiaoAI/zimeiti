@@ -1,0 +1,25 @@
+{
+  "hits": [
+    {
+      "chunk_id": "c_demo_1",
+      "text": "烟酰胺在部分敏感肌人群中可能引发短期刺痛或泛红，建议从低浓度、低频率开始，并避免与高刺激活性同晚叠加。",
+      "source": {
+        "document_id": "d_demo_1",
+        "filename": "品牌资料_成分说明.md",
+        "locator": { "para": 3 }
+      },
+      "score": 12.3
+    },
+    {
+      "chunk_id": "c_demo_2",
+      "text": "屏障受损期（爆痘、过度去角质后）应优先修护与保湿，暂缓引入可能刺激的美白/焕肤活性。",
+      "source": {
+        "document_id": "d_demo_1",
+        "filename": "品牌资料_成分说明.md",
+        "locator": { "para": 7 }
+      },
+      "score": 9.4
+    }
+  ]
+}
+

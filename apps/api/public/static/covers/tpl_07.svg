@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1440" viewBox="0 0 1080 1440">
+  <rect width="1080" height="1440" fill="#111827"/>
+  <text x="90" y="170" font-size="40" font-family="sans-serif" fill="#E5E7EB">问答反差</text>
+  <rect x="90" y="230" width="900" height="1090" rx="48" fill="#F9FAFB"/>
+  <rect x="140" y="320" width="800" height="180" rx="36" fill="#111827"/>
+  <text x="180" y="410" font-size="68" font-family="sans-serif" font-weight="900" fill="#fff">你以为…？</text>
+  <rect x="140" y="540" width="800" height="260" rx="36" fill="#FEF3C7"/>
+  <text x="180" y="650" font-size="88" font-family="sans-serif" font-weight="900" fill="#111">其实是…</text>
+  <text x="180" y="740" font-size="42" font-family="sans-serif" fill="#111">用一句话给出反差结论</text>
+  <text x="180" y="900" font-size="46" font-family="sans-serif" fill="#111">✅ 结论 / ✅ 方法 / ✅ 避坑</text>
+</svg>
+

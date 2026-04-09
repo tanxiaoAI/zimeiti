@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1440" viewBox="0 0 1080 1440">
+  <rect width="1080" height="1440" fill="#FFF7FD"/>
+  <text x="90" y="170" font-size="40" font-family="sans-serif" fill="#8B5CF6">手账贴纸</text>
+  <rect x="90" y="230" width="900" height="1090" rx="60" fill="#FFFFFF"/>
+  <path d="M140 260 h260 v90 h-260 z" fill="#FDE68A"/>
+  <text x="170" y="320" font-size="36" font-family="sans-serif" fill="#111">今日主题</text>
+  <text x="150" y="450" font-size="86" font-family="sans-serif" font-weight="900" fill="#111">封面标题</text>
+  <circle cx="910" cy="290" r="46" fill="#FB7185"/>
+  <circle cx="840" cy="340" r="26" fill="#34D399"/>
+  <circle cx="940" cy="380" r="18" fill="#60A5FA"/>
+  <g font-size="44" font-family="sans-serif" fill="#111">
+    <text x="150" y="620">• 要点一</text>
+    <text x="150" y="720">• 要点二</text>
+    <text x="150" y="820">• 要点三</text>
+  </g>
+</svg>
+

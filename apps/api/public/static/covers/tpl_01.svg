@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1440" viewBox="0 0 1080 1440">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#FFF7F0"/>
+      <stop offset="100%" stop-color="#FFE3E3"/>
+    </linearGradient>
+  </defs>
+  <rect width="1080" height="1440" fill="url(#bg)"/>
+  <rect x="80" y="120" width="920" height="1200" rx="36" fill="#FFFFFF" opacity="0.92"/>
+
+  <text x="140" y="260" font-size="44" font-family="sans-serif" fill="#111">简约大标题</text>
+  <text x="140" y="350" font-size="88" font-family="sans-serif" font-weight="800" fill="#111">封面标题</text>
+  <text x="140" y="450" font-size="42" font-family="sans-serif" fill="#444">副标题/补充说明</text>
+
+  <rect x="140" y="1160" width="260" height="72" rx="36" fill="#FF4D6D"/>
+  <text x="270" y="1210" text-anchor="middle" font-size="34" font-family="sans-serif" fill="#fff">避坑</text>
+  <rect x="420" y="1160" width="260" height="72" rx="36" fill="#111"/>
+  <text x="550" y="1210" text-anchor="middle" font-size="34" font-family="sans-serif" fill="#fff">成分党</text>
+</svg>
+

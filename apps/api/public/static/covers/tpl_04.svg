@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1440" viewBox="0 0 1080 1440">
+  <rect width="1080" height="1440" fill="#FFF5F5"/>
+  <text x="90" y="170" font-size="40" font-family="sans-serif" fill="#B42318">对比测评</text>
+  <text x="90" y="280" font-size="80" font-family="sans-serif" font-weight="800" fill="#111">标题：A vs B</text>
+  <rect x="90" y="360" width="420" height="980" rx="36" fill="#FFFFFF" stroke="#B42318" stroke-width="6"/>
+  <rect x="570" y="360" width="420" height="980" rx="36" fill="#FFFFFF" stroke="#0E7490" stroke-width="6"/>
+  <text x="300" y="450" text-anchor="middle" font-size="52" font-family="sans-serif" fill="#B42318" font-weight="800">A</text>
+  <text x="780" y="450" text-anchor="middle" font-size="52" font-family="sans-serif" fill="#0E7490" font-weight="800">B</text>
+  <g font-size="42" font-family="sans-serif" fill="#111">
+    <text x="130" y="560">优点：</text>
+    <text x="130" y="640">缺点：</text>
+    <text x="610" y="560">优点：</text>
+    <text x="610" y="640">缺点：</text>
+  </g>
+</svg>
+
