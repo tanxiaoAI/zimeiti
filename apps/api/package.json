@@ -8,6 +8,7 @@
     "lint": "node -c src/server.js"
   },
   "dependencies": {
+    "@ai-media/shared": "*",
     "better-sqlite3": "^12.8.0",
     "cors": "^2.8.5",
     "express": "^4.19.2",
