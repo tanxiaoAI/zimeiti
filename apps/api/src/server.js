@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import path from "node:path";
+import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { requestContext } from "./middlewares/requestContext.js";
 import { authApiKey } from "./middlewares/authApiKey.js";
@@ -61,7 +62,10 @@ app.use(requestContext);
 app.use("/static", express.static(path.join(__dirname, "..", "public", "static")));
 
 // 静态资源（前端构建产物）
-const webDistPath = path.join(__dirname, "..", "..", "web", "dist");
+let webDistPath = path.join(__dirname, "..", "dist");
+if (!fs.existsSync(webDistPath)) {
+  webDistPath = path.join(__dirname, "..", "..", "web", "dist");
+}
 app.use(express.static(webDistPath));
 
 app.get("/health", (req, res) => {
