@@ -27,6 +27,7 @@ import {
   addGenerationLog,
   createDraft,
   createProject,
+  deleteProject,
   createTopic,
   getAccountProfile,
   getDraft,
@@ -50,7 +51,7 @@ import { getLlmProvider } from "./providers/llm/index.js";
 import { getHotProvider } from "./providers/hot/index.js";
 import { getCoverProvider } from "./providers/cover/index.js";
 import { getRagProvider } from "./providers/rag/index.js";
-import { createDocument, listDocuments, processDocument, search as kbSearch } from "./services/kbStore.js";
+import { createDocument, listDocuments, processDocument, search as kbSearch, deleteDocumentsByProject } from "./services/kbStore.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -199,6 +200,22 @@ app.post("/api/v1/projects", authApiKey, validateBody(CreateProjectSchema), (req
   const user_id = req.context?.userId;
   const p = createProject({ user_id, ...req.validated.body });
   res.json(ok(p, request_id));
+});
+
+app.delete("/api/v1/projects/:projectId", authApiKey, async (req, res) => {
+  const request_id = req.context?.requestId;
+  const user_id = req.context?.userId;
+  const project_id = req.params.projectId;
+  const project = getProject(project_id);
+  if (!project) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在" }, request_id));
+
+  const deleted = deleteProject(project_id, user_id);
+  if (!deleted) {
+    return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在或无权限删除" }, request_id));
+  }
+
+  await deleteDocumentsByProject(project_id);
+  res.json(ok({ deleted: true }, request_id));
 });
 
 app.get("/api/v1/projects/:projectId/customer-profile", authApiKey, (req, res) => {

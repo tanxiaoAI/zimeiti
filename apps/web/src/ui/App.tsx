@@ -39,40 +39,132 @@ const NAV_GROUPS = [
 ];
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+function getScopedConfigKey(accountId: string, tab: string, field: string) {
+  return `config_${accountId}_${tab}_${field}`;
+}
+
+function getLegacyConfigKey(tab: string, field: string) {
+  return `config_${tab}_${field}`;
+}
+
+function readScopedConfig(accountId: string, tab: string, field: string) {
+  if (!accountId) return null;
+  return localStorage.getItem(getScopedConfigKey(accountId, tab, field)) ?? localStorage.getItem(getLegacyConfigKey(tab, field));
+}
+
+function writeScopedConfig(accountId: string, tab: string, field: string, value: string) {
+  if (!accountId) return;
+  localStorage.setItem(getScopedConfigKey(accountId, tab, field), value);
+}
+
+function clearProjectScopedConfig(accountId: string) {
+  if (!accountId) return;
+  for (const key of Object.keys(localStorage)) {
+    if (key.startsWith(`config_${accountId}_`)) {
+      localStorage.removeItem(key);
+    }
+  }
+}
 
 export default function App() {
   const [activeNav, setActiveNav] = useState("positioning");
   const [activeTopic, setActiveTopic] = useState<any>(null);
   const [isConfigOpen, setIsConfigOpen] = useState(false);
   const [isAccountDropdownOpen, setIsAccountDropdownOpen] = useState(false);
-  const [accounts, setAccounts] = useState([
-    { id: '1', name: '职场效能笔记' },
-    { id: '2', name: 'AI工具探索者' }
-  ]);
-  const [activeAccountId, setActiveAccountId] = useState('1');
+  const [accounts, setAccounts] = useState<any[]>([]);
+  const [activeAccountId, setActiveAccountId] = useState("");
 
   const activeAccount = accounts.find(a => a.id === activeAccountId) || accounts[0];
 
-  const handleAddAccount = () => {
-    const name = prompt("请输入新账号名称：");
-    if (name) {
-      const newId = Date.now().toString();
-      setAccounts([...accounts, { id: newId, name }]);
-      setActiveAccountId(newId);
+  useEffect(() => {
+    fetchAccounts();
+  }, []);
+
+  useEffect(() => {
+    if (!activeAccountId && accounts.length > 0) {
+      setActiveAccountId(accounts[0].id);
+    }
+  }, [accounts, activeAccountId]);
+
+  const fetchAccounts = async () => {
+    try {
+      const res = await fetch("/api/v1/projects", {
+        headers: { "X-API-Key": "demo-key" }
+      });
+      if (!res.ok) throw new Error("账号列表加载失败");
+      const data = await res.json();
+      const items = data.data?.items || [];
+      setAccounts(items);
+
+      const savedActiveId = localStorage.getItem("active_account_id");
+      if (savedActiveId && items.some((item: any) => item.id === savedActiveId)) {
+        setActiveAccountId(savedActiveId);
+      } else if (items[0]?.id) {
+        setActiveAccountId(items[0].id);
+        localStorage.setItem("active_account_id", items[0].id);
+      }
+    } catch (e) {
+      console.error(e);
+      alert("账号列表加载失败");
     }
   };
 
-  const handleDeleteAccount = (id: string, e: React.MouseEvent) => {
+  const handleAddAccount = async () => {
+    const name = prompt("请输入新账号名称：");
+    if (name?.trim()) {
+      try {
+        const res = await fetch("/api/v1/projects", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-API-Key": "demo-key"
+          },
+          body: JSON.stringify({ name: name.trim(), platform: "xiaohongshu" })
+        });
+        if (!res.ok) throw new Error("账号创建失败");
+        const data = await res.json();
+        const created = data.data;
+        setAccounts((prev) => [...prev, created]);
+        setActiveAccountId(created.id);
+        localStorage.setItem("active_account_id", created.id);
+        setIsAccountDropdownOpen(false);
+      } catch (e) {
+        console.error(e);
+        alert("账号创建失败");
+      }
+    }
+  };
+
+  const handleDeleteAccount = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (accounts.length <= 1) {
       alert("必须至少保留一个账号！");
       return;
     }
     if (confirm("确定要删除这个账号吗？相关数据将被清除。")) {
-      const newAccounts = accounts.filter(a => a.id !== id);
-      setAccounts(newAccounts);
-      if (activeAccountId === id) {
-        setActiveAccountId(newAccounts[0].id);
+      try {
+        const res = await fetch(`/api/v1/projects/${id}`, {
+          method: "DELETE",
+          headers: { "X-API-Key": "demo-key" }
+        });
+        if (!res.ok) throw new Error("账号删除失败");
+
+        clearProjectScopedConfig(id);
+        const newAccounts = accounts.filter(a => a.id !== id);
+        setAccounts(newAccounts);
+        if (activeAccountId === id) {
+          const nextId = newAccounts[0]?.id || "";
+          setActiveAccountId(nextId);
+          if (nextId) {
+            localStorage.setItem("active_account_id", nextId);
+          } else {
+            localStorage.removeItem("active_account_id");
+          }
+        }
+        setIsAccountDropdownOpen(false);
+      } catch (e) {
+        console.error(e);
+        alert("账号删除失败");
       }
     }
   };
@@ -131,7 +223,7 @@ export default function App() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, overflow: 'hidden' }}>
               <UserCheck size={16} color="var(--primary)" />
               <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {activeAccount.name}
+                {activeAccount?.name || "未选择账号"}
               </span>
             </div>
             <ChevronDown size={16} color="var(--text-muted)" style={{ transform: isAccountDropdownOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }} />
@@ -172,6 +264,7 @@ export default function App() {
                         key={acc.id}
                         onClick={() => {
                           setActiveAccountId(acc.id);
+                          localStorage.setItem("active_account_id", acc.id);
                           setIsAccountDropdownOpen(false);
                         }}
                         style={{
@@ -255,7 +348,7 @@ export default function App() {
       <main className="main-area">
         <header className="topbar">
           <div className="breadcrumb">
-            <span className="breadcrumb-muted">当前账号: {activeAccount.name}</span>
+            <span className="breadcrumb-muted">当前账号: {activeAccount?.name || "未选择账号"}</span>
             <ChevronRight size={16} className="breadcrumb-muted" />
             <span>{currentNavItem?.title}</span>
           </div>
@@ -350,10 +443,8 @@ function ConfigView({ activeAccountId }: { activeAccountId: string }) {
     { id: "analytics", title: "数据复盘诊断" },
   ];
 
-  const getFileStorageKey = (tab: string) => `config_${tab}_file`;
-
   const readSavedFileInfo = (tab: string) => {
-    const raw = localStorage.getItem(getFileStorageKey(tab));
+    const raw = readScopedConfig(activeAccountId, tab, "file");
     if (!raw) return { fileName: "", fileStatus: "" };
 
     try {
@@ -369,28 +460,28 @@ function ConfigView({ activeAccountId }: { activeAccountId: string }) {
 
   // 当切换 tab 时读取配置
   useEffect(() => {
-    const savedModel = localStorage.getItem(`config_${activeTab}_model`);
+    const savedModel = readScopedConfig(activeAccountId, activeTab, "model");
     if (savedModel) {
       setSelectedModel(savedModel);
     } else {
       setSelectedModel("claude-opus-4-6");
     }
 
-    const savedPrompt = localStorage.getItem(`config_${activeTab}_prompt`);
+    const savedPrompt = readScopedConfig(activeAccountId, activeTab, "prompt");
     if (savedPrompt !== null) {
       setPromptValue(savedPrompt);
     } else {
       setPromptValue(`作为资深的【${configOptions.find(o => o.id === activeTab)?.title}】专家...\n1. 语气要求：专业、真诚、不爹味\n2. 格式要求：严格遵循输出结构...`);
     }
 
-    const savedConstraint = localStorage.getItem(`config_${activeTab}_constraint`);
+    const savedConstraint = readScopedConfig(activeAccountId, activeTab, "constraint");
     if (savedConstraint !== null) {
       setConstraintValue(savedConstraint);
     } else {
       setConstraintValue("必须包含具体的数字指标，结尾不要加多余的问候语。");
     }
 
-    const savedGreeting = localStorage.getItem(`config_${activeTab}_greeting`);
+    const savedGreeting = readScopedConfig(activeAccountId, activeTab, "greeting");
     if (savedGreeting !== null) {
       setGreetingValue(savedGreeting);
     } else {
@@ -404,14 +495,14 @@ function ConfigView({ activeAccountId }: { activeAccountId: string }) {
     const savedFileInfo = readSavedFileInfo(activeTab);
     setFileName(savedFileInfo.fileName);
     setFileStatus(savedFileInfo.fileStatus);
-  }, [activeTab]);
+  }, [activeTab, activeAccountId]);
 
   const handleSave = () => {
-    localStorage.setItem(`config_${activeTab}_model`, selectedModel);
-    localStorage.setItem(`config_${activeTab}_prompt`, promptValue);
-    localStorage.setItem(`config_${activeTab}_constraint`, constraintValue);
+    writeScopedConfig(activeAccountId, activeTab, "model", selectedModel);
+    writeScopedConfig(activeAccountId, activeTab, "prompt", promptValue);
+    writeScopedConfig(activeAccountId, activeTab, "constraint", constraintValue);
     if (activeTab === "positioning" || activeTab === "free_chat") {
-      localStorage.setItem(`config_${activeTab}_greeting`, greetingValue);
+      writeScopedConfig(activeAccountId, activeTab, "greeting", greetingValue);
     }
     alert('保存成功！');
   };
@@ -468,7 +559,7 @@ function ConfigView({ activeAccountId }: { activeAccountId: string }) {
         fileStatus: `已索引，分块 ${processedDoc.chunks || 0} 段`,
         documentId: uploadedDoc.id
       };
-      localStorage.setItem(getFileStorageKey(activeTab), JSON.stringify(nextInfo));
+      writeScopedConfig(activeAccountId, activeTab, "file", JSON.stringify(nextInfo));
       setFileStatus(nextInfo.fileStatus);
       alert(`文件 ${file.name} 上传并索引完成`);
     } catch (err: any) {
@@ -758,9 +849,9 @@ function PositioningView({ activeAccountId }: { activeAccountId: string }) {
     setMessages(prev => [...prev, { id: tempId, role: "user", content: msg }]);
 
     try {
-      const savedModel = localStorage.getItem('config_positioning_model') || "claude-opus-4-6";
-      const savedPrompt = localStorage.getItem('config_positioning_prompt') || "你是一个资深的自媒体账号定位专家。你的目标是和用户对话，帮他们梳理出账号的赛道、人设和内容支柱。";
-      const savedConstraint = localStorage.getItem('config_positioning_constraint') || "";
+      const savedModel = readScopedConfig(activeAccountId, 'positioning', 'model') || "claude-opus-4-6";
+      const savedPrompt = readScopedConfig(activeAccountId, 'positioning', 'prompt') || "你是一个资深的自媒体账号定位专家。你的目标是和用户对话，帮他们梳理出账号的赛道、人设和内容支柱。";
+      const savedConstraint = readScopedConfig(activeAccountId, 'positioning', 'constraint') || "";
       
       const systemInstruction = savedPrompt + (savedConstraint ? `\n\n用户补充的偏好约束：\n${savedConstraint}` : "");
 
@@ -866,7 +957,7 @@ function PositioningView({ activeAccountId }: { activeAccountId: string }) {
     { key: "platform_preference", label: "平台偏好 (倾向于在哪个平台做？)" },
   ];
 
-  const greeting = localStorage.getItem('config_positioning_greeting') || "你好！我是账号定位专家。我们从你的技能和兴趣开始聊起吧？";
+  const greeting = readScopedConfig(activeAccountId, 'positioning', 'greeting') || "你好！我是账号定位专家。我们从你的技能和兴趣开始聊起吧？";
 
   const isProfileComplete = profileFields.every(f => profile[f.key] && String(profile[f.key]).trim() !== '');
 
@@ -1108,9 +1199,9 @@ function FreeChatView({ activeAccountId }: { activeAccountId: string }) {
     setMessages(prev => [...prev, { id: tempId, role: "user", content: msg }]);
 
     try {
-      const savedModel = localStorage.getItem('config_free_chat_model') || "claude-opus-4-6";
-      const savedPrompt = localStorage.getItem('config_free_chat_prompt') || "你是一个专业、友好、简洁的自由对话助手。请用中文与用户进行自然的多轮交流，优先给出清晰、可执行的回答。";
-      const savedConstraint = localStorage.getItem('config_free_chat_constraint') || "";
+      const savedModel = readScopedConfig(activeAccountId, 'free_chat', 'model') || "claude-opus-4-6";
+      const savedPrompt = readScopedConfig(activeAccountId, 'free_chat', 'prompt') || "你是一个专业、友好、简洁的自由对话助手。请用中文与用户进行自然的多轮交流，优先给出清晰、可执行的回答。";
+      const savedConstraint = readScopedConfig(activeAccountId, 'free_chat', 'constraint') || "";
       const systemInstruction = savedPrompt + (savedConstraint ? `\n\n用户补充的偏好约束：\n${savedConstraint}` : "");
 
       const res = await fetch(`/api/v1/projects/${activeAccountId}/free-chat`, {
@@ -1187,7 +1278,7 @@ function FreeChatView({ activeAccountId }: { activeAccountId: string }) {
     e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
   };
 
-  const greeting = localStorage.getItem('config_free_chat_greeting') || "你好，我是自由对话助手。你可以直接和我聊任何想法、问题或任务。";
+  const greeting = readScopedConfig(activeAccountId, 'free_chat', 'greeting') || "你好，我是自由对话助手。你可以直接和我聊任何想法、问题或任务。";
 
   return (
     <div style={{ display: 'flex', gap: 24, height: 'calc(100vh - 140px)' }}>
@@ -1434,9 +1525,9 @@ function TeardownView({ activeAccountId }: { activeAccountId: string }) {
     if (!teardownData || !teardownData.id) return;
     setAnalyzing(true);
     try {
-      const savedModel = localStorage.getItem('config_teardown_model') || "claude-opus-4-6";
-      const savedPrompt = localStorage.getItem('config_teardown_prompt') || "你是一个资深的视频内容拆解专家。请仔细分析提供的视频标题、内容、作者等信息，总结出这篇内容的钩子、结构、亮点和可复用模板。";
-      const savedConstraint = localStorage.getItem('config_teardown_constraint') || "";
+      const savedModel = readScopedConfig(activeAccountId, 'teardown', 'model') || "claude-opus-4-6";
+      const savedPrompt = readScopedConfig(activeAccountId, 'teardown', 'prompt') || "你是一个资深的视频内容拆解专家。请仔细分析提供的视频标题、内容、作者等信息，总结出这篇内容的钩子、结构、亮点和可复用模板。";
+      const savedConstraint = readScopedConfig(activeAccountId, 'teardown', 'constraint') || "";
       const systemInstruction = savedPrompt + (savedConstraint ? `\n\n补充要求：\n${savedConstraint}` : "");
 
       const res = await fetch(`/api/v1/projects/${activeAccountId}/video-teardown/${teardownData.id}/analyze`, {

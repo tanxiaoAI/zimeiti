@@ -14,7 +14,6 @@ export function authApiKey(req, res, next) {
     res.status(403).json(fail({ code: ErrorCodes.AUTH_INVALID, message: "API Key无效" }, request_id));
     return;
   }
-  req.context = { ...(req.context || {}), userId: verified.user_id };
+  req.context = { ...(req.context || {}), userId: verified.id };
   next();
 }
-

@@ -25,6 +25,42 @@ export function getProject(id) {
   return db.prepare("SELECT * FROM projects WHERE id = ?").get(id) || null;
 }
 
+export function deleteProject(project_id, user_id) {
+  const existing = db.prepare("SELECT * FROM projects WHERE id = ? AND user_id = ?").get(project_id, user_id);
+  if (!existing) return false;
+  const deletedTopicIds = new Set();
+
+  const deleteProjectTx = db.transaction(() => {
+    db.prepare("DELETE FROM customer_profiles WHERE project_id = ?").run(project_id);
+    db.prepare("DELETE FROM video_teardowns WHERE project_id = ?").run(project_id);
+    db.prepare("DELETE FROM chat_messages WHERE project_id = ?").run(project_id);
+    db.prepare("DELETE FROM projects WHERE id = ? AND user_id = ?").run(project_id, user_id);
+  });
+
+  deleteProjectTx();
+
+  for (const [topicId, topic] of topics.entries()) {
+    if (topic.project_id === project_id) {
+      deletedTopicIds.add(topicId);
+      topics.delete(topicId);
+    }
+  }
+
+  for (const [draftId, draft] of drafts.entries()) {
+    if (deletedTopicIds.has(draft.topic_id)) {
+      drafts.delete(draftId);
+    }
+  }
+
+  for (let i = generationLogs.length - 1; i >= 0; i -= 1) {
+    if (generationLogs[i].project_id === project_id) {
+      generationLogs.splice(i, 1);
+    }
+  }
+
+  return true;
+}
+
 export function getCustomerProfile(project_id) {
   return db.prepare("SELECT * FROM customer_profiles WHERE project_id = ?").get(project_id) || null;
 }

@@ -115,3 +115,24 @@ export function search({ project_id, query, top_k = 5 }) {
     };
   });
 }
+
+export async function deleteDocumentsByProject(project_id) {
+  const docsToDelete = [...documents.values()].filter((doc) => doc.project_id === project_id);
+
+  for (const doc of docsToDelete) {
+    if (doc.storage_path) {
+      try {
+        await fs.unlink(doc.storage_path);
+      } catch (e) {
+        // ignore missing files
+      }
+    }
+    documents.delete(doc.id);
+  }
+
+  for (let i = chunks.length - 1; i >= 0; i -= 1) {
+    if (chunks[i].project_id === project_id) {
+      chunks.splice(i, 1);
+    }
+  }
+}

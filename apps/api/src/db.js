@@ -99,11 +99,13 @@ export function initDb() {
     INSERT OR IGNORE INTO users (id, username) VALUES ('demo_user_123', 'Demo User');
     
     -- Ensure project '1' and '2' exists for the frontend mock
-    INSERT OR IGNORE INTO projects (id, user_id, name, platform) VALUES ('1', 'demo_user_123', '职场效能笔记', 'xiaohongshu');
+    INSERT OR IGNORE INTO projects (id, user_id, name, platform) VALUES ('1', 'demo_user_123', '谈笑AI', 'xiaohongshu');
     INSERT OR IGNORE INTO customer_profiles (project_id) VALUES ('1');
     
-    INSERT OR IGNORE INTO projects (id, user_id, name, platform) VALUES ('2', 'demo_user_123', 'AI工具探索者', 'xiaohongshu');
+    INSERT OR IGNORE INTO projects (id, user_id, name, platform) VALUES ('2', 'demo_user_123', 'Amy', 'xiaohongshu');
     INSERT OR IGNORE INTO customer_profiles (project_id) VALUES ('2');
+    UPDATE projects SET name = '谈笑AI' WHERE id = '1';
+    UPDATE projects SET name = 'Amy' WHERE id = '2';
   `);
 }
 
