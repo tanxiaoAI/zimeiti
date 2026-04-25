@@ -91,7 +91,7 @@ export default function App() {
       case "topics": return <TopicsView onSelectTopic={handleTopicSelect} />;
       case "editor": return <EditorView topic={activeTopic} />;
       case "analytics": return <AnalyticsView />;
-      case "config": return <ConfigView />;
+      case "config": return <ConfigView activeAccountId={activeAccountId} />;
       default: return <div className="empty-state">建设中...</div>;
     }
   };
@@ -329,13 +329,15 @@ export default function App() {
   );
 }
 
-function ConfigView() {
+function ConfigView({ activeAccountId }: { activeAccountId: string }) {
   const [activeTab, setActiveTab] = useState("positioning");
   const [promptValue, setPromptValue] = useState("");
   const [constraintValue, setConstraintValue] = useState("");
   const [greetingValue, setGreetingValue] = useState("");
   const [fileName, setFileName] = useState("");
   const [selectedModel, setSelectedModel] = useState("claude-opus-4-6");
+  const [fileStatus, setFileStatus] = useState("");
+  const [uploading, setUploading] = useState(false);
 
   const configOptions = [
     { id: "free_chat", title: "自由对话" },
@@ -347,6 +349,23 @@ function ConfigView() {
     { id: "body", title: "正文与脚本填充" },
     { id: "analytics", title: "数据复盘诊断" },
   ];
+
+  const getFileStorageKey = (tab: string) => `config_${tab}_file`;
+
+  const readSavedFileInfo = (tab: string) => {
+    const raw = localStorage.getItem(getFileStorageKey(tab));
+    if (!raw) return { fileName: "", fileStatus: "" };
+
+    try {
+      const parsed = JSON.parse(raw);
+      return {
+        fileName: parsed.fileName || "",
+        fileStatus: parsed.fileStatus || ""
+      };
+    } catch {
+      return { fileName: raw, fileStatus: "仅保存了文件名，未上传到服务器" };
+    }
+  };
 
   // 当切换 tab 时读取配置
   useEffect(() => {
@@ -382,7 +401,9 @@ function ConfigView() {
       );
     }
     
-    setFileName(localStorage.getItem(`config_${activeTab}_file`) || "");
+    const savedFileInfo = readSavedFileInfo(activeTab);
+    setFileName(savedFileInfo.fileName);
+    setFileStatus(savedFileInfo.fileStatus);
   }, [activeTab]);
 
   const handleSave = () => {
@@ -395,12 +416,68 @@ function ConfigView() {
     alert('保存成功！');
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      const file = e.target.files[0];
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!activeAccountId) {
+      alert("请先选择账号项目后再上传文件");
+      return;
+    }
+
+    const lowerName = file.name.toLowerCase();
+    const allowedExtensions = [".md", ".txt", ".csv", ".json"];
+    if (!allowedExtensions.some(ext => lowerName.endsWith(ext))) {
+      alert("当前仅支持上传 .md、.txt、.csv、.json 文本类文件");
+      return;
+    }
+
+    try {
+      setUploading(true);
       setFileName(file.name);
-      localStorage.setItem(`config_${activeTab}_file`, file.name);
-      alert(`文件 ${file.name} 已选择并保存记录 (当前为Mock，实际需调用API上传至服务器)`);
+      setFileStatus("上传中...");
+
+      const formData = new FormData();
+      formData.append("project_id", activeAccountId);
+      formData.append("file", file);
+
+      const uploadRes = await fetch("/api/v1/kb/documents", {
+        method: "POST",
+        headers: { "X-API-Key": "demo-key" },
+        body: formData
+      });
+      const uploadJson = await uploadRes.json();
+      if (!uploadRes.ok || uploadJson.success === false || uploadJson.error) {
+        throw new Error(uploadJson.message || uploadJson.error?.message || "上传失败");
+      }
+
+      const uploadedDoc = uploadJson.data;
+      setFileStatus("已上传，正在索引...");
+
+      const processRes = await fetch(`/api/v1/kb/documents/${uploadedDoc.id}/process`, {
+        method: "POST",
+        headers: { "X-API-Key": "demo-key" }
+      });
+      const processJson = await processRes.json();
+      if (!processRes.ok || processJson.success === false || processJson.error) {
+        throw new Error(processJson.message || processJson.error?.message || "索引失败");
+      }
+
+      const processedDoc = processJson.data;
+      const nextInfo = {
+        fileName: file.name,
+        fileStatus: `已索引，分块 ${processedDoc.chunks || 0} 段`,
+        documentId: uploadedDoc.id
+      };
+      localStorage.setItem(getFileStorageKey(activeTab), JSON.stringify(nextInfo));
+      setFileStatus(nextInfo.fileStatus);
+      alert(`文件 ${file.name} 上传并索引完成`);
+    } catch (err: any) {
+      console.error(err);
+      setFileStatus("上传失败");
+      alert(`文件上传失败：${err.message}`);
+    } finally {
+      setUploading(false);
+      e.target.value = "";
     }
   };
 
@@ -488,12 +565,15 @@ function ConfigView() {
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: '0.9rem', fontWeight: 600 }}>点击上传专用示例库/文件</div>
                 <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  {fileName ? `已选择：${fileName}` : '如：爆款标题范例库.csv'}
+                  {fileName ? `文件：${fileName}` : '支持：.md / .txt / .csv / .json'}
+                </div>
+                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: 4 }}>
+                  {fileStatus || '上传后会写入知识库并建立索引，当前模块仅显示已上传状态'}
                 </div>
               </div>
               <label className="btn-ghost" style={{ padding: '6px 12px', cursor: 'pointer' }}>
-                <input type="file" style={{ display: 'none' }} onChange={handleFileUpload} />
-                浏览文件
+                <input type="file" accept=".md,.txt,.csv,.json,text/markdown,text/plain,application/json,text/csv" style={{ display: 'none' }} onChange={handleFileUpload} disabled={uploading} />
+                {uploading ? '上传中...' : '浏览文件'}
               </label>
             </div>
           </div>
