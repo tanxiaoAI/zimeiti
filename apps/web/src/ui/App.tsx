@@ -472,18 +472,31 @@ function ConfigView({ activeAccountId }: { activeAccountId: string }) {
     { id: "analytics", title: "数据复盘诊断" },
   ];
 
-  const readSavedFileInfo = (tab: string) => {
-    const raw = readScopedConfig(activeAccountId, tab, "file");
-    if (!raw) return { fileName: "", fileStatus: "" };
+  const fetchContextFileInfo = async (tab: string) => {
+    if (!activeAccountId) {
+      setFileName("");
+      setFileStatus("");
+      return;
+    }
 
     try {
-      const parsed = JSON.parse(raw);
-      return {
-        fileName: parsed.fileName || "",
-        fileStatus: parsed.fileStatus || ""
-      };
-    } catch {
-      return { fileName: raw, fileStatus: "仅保存了文件名，未上传到服务器" };
+      const res = await fetch(`/api/v1/projects/${activeAccountId}/context-file?module_key=${encodeURIComponent(tab)}`, {
+        headers: { "X-API-Key": "demo-key" }
+      });
+      const payload = await readApiResponse(res);
+      const fileInfo = payload.json?.data;
+
+      if (res.ok && fileInfo) {
+        setFileName(fileInfo.filename || "");
+        setFileStatus(`已挂载全文，${Math.ceil((fileInfo.size_bytes || 0) / 1024)} KB`);
+      } else {
+        setFileName("");
+        setFileStatus("");
+      }
+    } catch (e) {
+      console.error(e);
+      setFileName("");
+      setFileStatus("");
     }
   };
 
@@ -521,9 +534,7 @@ function ConfigView({ activeAccountId }: { activeAccountId: string }) {
       );
     }
     
-    const savedFileInfo = readSavedFileInfo(activeTab);
-    setFileName(savedFileInfo.fileName);
-    setFileStatus(savedFileInfo.fileStatus);
+    fetchContextFileInfo(activeTab);
   }, [activeTab, activeAccountId]);
 
   const handleSave = () => {
@@ -557,10 +568,10 @@ function ConfigView({ activeAccountId }: { activeAccountId: string }) {
       setFileStatus("上传中...");
 
       const formData = new FormData();
-      formData.append("project_id", activeAccountId);
+      formData.append("module_key", activeTab);
       formData.append("file", file);
 
-      const uploadRes = await fetch("/api/v1/kb/documents", {
+      const uploadRes = await fetch(`/api/v1/projects/${activeAccountId}/context-file`, {
         method: "POST",
         headers: { "X-API-Key": "demo-key" },
         body: formData
@@ -575,30 +586,15 @@ function ConfigView({ activeAccountId }: { activeAccountId: string }) {
       }
 
       const uploadedDoc = uploadJson.data;
-      setFileStatus("已上传，正在索引...");
-
-      const processRes = await fetch(`/api/v1/kb/documents/${uploadedDoc.id}/process`, {
-        method: "POST",
-        headers: { "X-API-Key": "demo-key" }
-      });
-      const processPayload = await readApiResponse(processRes);
-      const processJson = processPayload.json;
-      if (!processRes.ok || processJson?.success === false || processJson?.error) {
-        const fallbackMessage = processPayload.rawText?.trim().startsWith("<!DOCTYPE")
-          ? `服务返回了 HTML 错误页，状态码 ${processRes.status}`
-          : (processPayload.rawText || "").slice(0, 120);
-        throw new Error(processJson?.message || processJson?.error?.message || fallbackMessage || "索引失败");
-      }
-
-      const processedDoc = processJson.data;
       const nextInfo = {
-        fileName: file.name,
-        fileStatus: `已索引，分块 ${processedDoc.chunks || 0} 段`,
+        fileName: uploadedDoc.filename || file.name,
+        fileStatus: `已挂载全文，${Math.ceil((uploadedDoc.size_bytes || file.size) / 1024)} KB`,
         documentId: uploadedDoc.id
       };
       writeScopedConfig(activeAccountId, activeTab, "file", JSON.stringify(nextInfo));
+      setFileName(nextInfo.fileName);
       setFileStatus(nextInfo.fileStatus);
-      alert(`文件 ${file.name} 上传并索引完成`);
+      alert(`文件 ${nextInfo.fileName} 已挂载，后续对话会自动携带全文`);
     } catch (err: any) {
       console.error(err);
       setFileStatus("上传失败");
@@ -696,7 +692,7 @@ function ConfigView({ activeAccountId }: { activeAccountId: string }) {
                   {fileName ? `文件：${fileName}` : '支持：.md / .txt / .csv / .json'}
                 </div>
                 <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: 4 }}>
-                  {fileStatus || '上传后会写入知识库并建立索引，当前模块仅显示已上传状态'}
+                  {fileStatus || '上传后会完整挂载到当前模块，每轮对话都会自动携带全文内容'}
                 </div>
               </div>
               <label className="btn-ghost" style={{ padding: '6px 12px', cursor: 'pointer' }}>
@@ -1376,13 +1372,14 @@ function FreeChatView({ activeAccountId }: { activeAccountId: string }) {
               {m.role === 'model' && i === messages.length - 1 && latestCitations.length > 0 && (
                 <div style={{ marginTop: 8, padding: '10px 12px', background: 'var(--bg-app)', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-sm)' }}>
                   <div style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: 6 }}>
-                    已参考知识库
+                    {latestCitations.some((citation) => citation.full_document) ? '已挂载全文文件' : '已参考知识库'}
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     {latestCitations.map((citation, idx) => (
                       <div key={`${citation.chunk_id || idx}`} style={{ fontSize: '0.8rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
                         {idx + 1}. {decodeDisplayFilename(citation.source?.filename || '未知文件')}
-                        {citation.source?.locator?.para ? ` · 第${citation.source.locator.para}段` : ''}
+                        {citation.full_document ? ' · 已完整挂载' : ''}
+                        {!citation.full_document && citation.source?.locator?.para ? ` · 第${citation.source.locator.para}段` : ''}
                       </div>
                     ))}
                   </div>

@@ -34,6 +34,7 @@ export function deleteProject(project_id, user_id) {
     db.prepare("DELETE FROM customer_profiles WHERE project_id = ?").run(project_id);
     db.prepare("DELETE FROM video_teardowns WHERE project_id = ?").run(project_id);
     db.prepare("DELETE FROM chat_messages WHERE project_id = ?").run(project_id);
+    db.prepare("DELETE FROM context_files WHERE project_id = ?").run(project_id);
     db.prepare("DELETE FROM projects WHERE id = ? AND user_id = ?").run(project_id, user_id);
   });
 
@@ -94,6 +95,52 @@ export function deleteChatMessage(id, project_id, chat_type = "positioning") {
 
 export function listChatMessages(project_id, chat_type = "positioning") {
   return db.prepare("SELECT * FROM chat_messages WHERE project_id = ? AND chat_type = ? ORDER BY created_at ASC").all(project_id, chat_type);
+}
+
+export function saveContextFile(project_id, module_key, filename, content) {
+  const existing = db
+    .prepare("SELECT id FROM context_files WHERE project_id = ? AND module_key = ?")
+    .get(project_id, module_key);
+
+  const size_bytes = Buffer.byteLength(content || "", "utf8");
+
+  if (existing) {
+    db.prepare(`
+      UPDATE context_files
+      SET filename = ?, content = ?, size_bytes = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE project_id = ? AND module_key = ?
+    `).run(filename, content, size_bytes, project_id, module_key);
+
+    return getContextFile(project_id, module_key);
+  }
+
+  const id = `ctx_${nanoid(10)}`;
+  db.prepare(`
+    INSERT INTO context_files (id, project_id, module_key, filename, content, size_bytes)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(id, project_id, module_key, filename, content, size_bytes);
+
+  return getContextFile(project_id, module_key);
+}
+
+export function getContextFile(project_id, module_key) {
+  return (
+    db.prepare(`
+      SELECT id, project_id, module_key, filename, content, size_bytes, created_at, updated_at
+      FROM context_files
+      WHERE project_id = ? AND module_key = ?
+    `).get(project_id, module_key) || null
+  );
+}
+
+export function getContextFileMeta(project_id, module_key) {
+  return (
+    db.prepare(`
+      SELECT id, project_id, module_key, filename, size_bytes, created_at, updated_at
+      FROM context_files
+      WHERE project_id = ? AND module_key = ?
+    `).get(project_id, module_key) || null
+  );
 }
 
 export function saveAccountProfile(project_id, positioning_json) {

@@ -43,7 +43,10 @@ import {
   updateCustomerProfile,
   listChatMessages,
   addChatMessage,
-  deleteChatMessage
+  deleteChatMessage,
+  saveContextFile,
+  getContextFile,
+  getContextFileMeta
 } from "./services/appStore.js";
 import { addVideoTeardown, listVideoTeardowns, getVideoTeardown, updateVideoTeardown, deleteVideoTeardown } from "./services/appStore.js";
 
@@ -98,8 +101,32 @@ async function handleProjectChat(req, res, chatType, options = {}) {
     const startTime = Date.now();
     let citations = [];
     let finalSystemInstruction = systemInstruction;
+    let fullContextFile = null;
 
-    if (options.kbEnabled) {
+    if (options.fullContextModule) {
+      fullContextFile = getContextFile(project_id, options.fullContextModule);
+      if (fullContextFile?.content) {
+        citations = [
+          {
+            source: { filename: fullContextFile.filename, locator: null },
+            full_document: true,
+            size_bytes: fullContextFile.size_bytes
+          }
+        ];
+
+        finalSystemInstruction = `${systemInstruction || "你是一个专业、友好、简洁的中文助手。"}
+
+【已挂载全文参考文件】
+以下是用户为当前模块长期挂载的完整参考文件。回答时请优先基于该文件，不要声称“没有收到文件”或“无法查看附件”。
+如果用户的问题与文件相关，请尽量直接引用、整理、改写和执行。
+
+文件名：${fullContextFile.filename}
+文件全文如下：
+<<<FULL_CONTEXT_FILE
+${fullContextFile.content}
+FULL_CONTEXT_FILE>>>`;
+      }
+    } else if (options.kbEnabled) {
       citations = kbSearch({
         project_id,
         query: message,
@@ -267,7 +294,7 @@ app.get("/api/v1/projects/:projectId/free-chat", authApiKey, (req, res) => {
 });
 
 app.post("/api/v1/projects/:projectId/free-chat", authApiKey, async (req, res) => {
-  return handleProjectChat(req, res, "free_chat", { profileMode: false, kbEnabled: true, kbTopK: 4 });
+  return handleProjectChat(req, res, "free_chat", { profileMode: false, fullContextModule: "free_chat" });
 });
 
 app.delete("/api/v1/projects/:projectId/free-chat/:messageId", authApiKey, (req, res) => {
@@ -586,6 +613,34 @@ app.post("/api/v1/covers/render", authApiKey, validateBody(CoverRenderSchema), a
 });
 
 // knowledge base
+app.get("/api/v1/projects/:projectId/context-file", authApiKey, (req, res) => {
+  const request_id = req.context?.requestId;
+  const project = getProject(req.params.projectId);
+  const module_key = String(req.query.module_key || "");
+  if (!project) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在" }, request_id));
+  if (!module_key) return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "缺少module_key" }, request_id));
+  res.json(ok(getContextFileMeta(project.id, module_key), request_id));
+});
+
+app.post("/api/v1/projects/:projectId/context-file", authApiKey, upload.single("file"), async (req, res) => {
+  const request_id = req.context?.requestId;
+  const project = getProject(req.params.projectId);
+  const module_key = String(req.body.module_key || "");
+  if (!project) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在" }, request_id));
+  if (!module_key) return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "缺少module_key" }, request_id));
+  if (!req.file) return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "缺少file" }, request_id));
+
+  try {
+    const filename = Buffer.from(req.file.originalname, "latin1").toString("utf8");
+    const content = req.file.buffer.toString("utf8");
+    const saved = saveContextFile(project.id, module_key, filename, content);
+    res.json(ok(saved, request_id));
+  } catch (e) {
+    console.error(e);
+    res.status(500).json(fail({ code: ErrorCodes.INTERNAL_ERROR, message: `全文文件上传失败：${e.message}` }, request_id));
+  }
+});
+
 app.get("/api/v1/kb/documents", authApiKey, (req, res) => {
   const request_id = req.context?.requestId;
   const project_id = String(req.query.project_id || "");
