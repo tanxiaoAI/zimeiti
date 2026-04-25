@@ -37,10 +37,27 @@ function tokenizeQuery(query) {
   return [...expandedTokens].filter((token) => token.length >= 2);
 }
 
+function decodeUploadedFilename(originalname) {
+  if (!originalname) return "unnamed-file";
+  const hasCjk = /[\u4e00-\u9fff]/.test(originalname);
+  if (hasCjk) return path.basename(originalname);
+
+  try {
+    const decoded = Buffer.from(originalname, "latin1").toString("utf8");
+    if (/[\u4e00-\u9fff]/.test(decoded)) {
+      return path.basename(decoded);
+    }
+  } catch {
+    // ignore decode failures and fall back to original name
+  }
+
+  return path.basename(originalname);
+}
+
 export async function createDocument({ project_id, originalname, buffer }) {
   await ensureDirs();
   const id = `doc_${nanoid(8)}`;
-  const filename = originalname;
+  const filename = decodeUploadedFilename(originalname);
   const filePath = path.join(docsDir, `${id}_${filename}`);
   await fs.writeFile(filePath, buffer);
   const doc = { id, project_id, filename, storage_path: filePath, status: "uploaded", created_at: new Date().toISOString() };

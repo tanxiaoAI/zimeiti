@@ -66,6 +66,22 @@ function clearProjectScopedConfig(accountId: string) {
   }
 }
 
+function decodeDisplayFilename(filename: string) {
+  if (!filename) return "未知文件";
+  if (/[\u4e00-\u9fff]/.test(filename)) return filename;
+
+  try {
+    const decoded = decodeURIComponent(escape(filename));
+    if (/[\u4e00-\u9fff]/.test(decoded)) {
+      return decoded;
+    }
+  } catch {
+    // ignore decode failures
+  }
+
+  return filename;
+}
+
 async function readApiResponse(response: Response) {
   const rawText = await response.text();
   let json: any = null;
@@ -1365,7 +1381,7 @@ function FreeChatView({ activeAccountId }: { activeAccountId: string }) {
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     {latestCitations.map((citation, idx) => (
                       <div key={`${citation.chunk_id || idx}`} style={{ fontSize: '0.8rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
-                        {idx + 1}. {citation.source?.filename || '未知文件'}
+                        {idx + 1}. {decodeDisplayFilename(citation.source?.filename || '未知文件')}
                         {citation.source?.locator?.para ? ` · 第${citation.source.locator.para}段` : ''}
                       </div>
                     ))}
