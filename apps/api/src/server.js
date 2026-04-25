@@ -77,6 +77,70 @@ app.get("/health", (req, res) => {
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500 * 1024 * 1024 } });
 
+async function handleProjectChat(req, res, chatType, options = {}) {
+  const request_id = req.context?.requestId;
+  const project_id = req.params.projectId;
+  const project = getProject(project_id);
+  if (!project) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在" }, request_id));
+
+  const { message, systemInstruction, model } = req.body;
+  if (!message) return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "缺少聊天内容" }, request_id));
+
+  const userMsg = addChatMessage(project_id, "user", message, null, null, chatType);
+
+  try {
+    const history = listChatMessages(project_id, chatType);
+    const currentProfile = options.profileMode === false ? null : getCustomerProfile(project_id);
+    const pastHistory = history.slice(0, -1);
+    const startTime = Date.now();
+
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders?.();
+
+    res.write(`data: ${JSON.stringify({ type: "userMsg", message: userMsg })}\n\n`);
+
+    let finalReply = "";
+    let updates = {};
+    let usage = null;
+
+    for await (const event of streamChatWithGemini(systemInstruction, pastHistory, message, currentProfile, project_id, model, options)) {
+      if (event.chunk) {
+        finalReply = event.fullText || finalReply + event.chunk;
+        res.write(`data: ${JSON.stringify({ type: "chunk", chunk: event.chunk, fullText: event.fullText || finalReply })}\n\n`);
+      }
+
+      if (event.done) {
+        finalReply = event.finalReply || finalReply;
+        updates = event.updates || {};
+        usage = event.usage || usage;
+      }
+    }
+
+    const latency_ms = Date.now() - startTime;
+    const total_tokens = usage?.total_tokens || null;
+    const aiMessage = addChatMessage(project_id, "model", finalReply || "（系统未返回回复内容）", latency_ms, total_tokens, chatType);
+    const payload = { type: "done", message: aiMessage, updates };
+
+    if (options.profileMode !== false) {
+      payload.profile = getCustomerProfile(project_id);
+    }
+
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    res.end();
+  } catch (e) {
+    console.error(e);
+    if (!res.headersSent) {
+      res.status(500).json(fail({ code: ErrorCodes.INTERNAL_ERROR, message: String(e) }, request_id));
+      return;
+    }
+
+    res.write(`data: ${JSON.stringify({ type: "error", message: String(e) })}\n\n`);
+    res.end();
+  }
+}
+
 // -----------------------
 // API v1
 // -----------------------
@@ -129,65 +193,11 @@ app.get("/api/v1/projects/:projectId/positioning/chat", authApiKey, (req, res) =
   const request_id = req.context?.requestId;
   const project = getProject(req.params.projectId);
   if (!project) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在" }, request_id));
-  res.json(ok({ items: listChatMessages(project.id) }, request_id));
+  res.json(ok({ items: listChatMessages(project.id, "positioning") }, request_id));
 });
 
 app.post("/api/v1/projects/:projectId/positioning/chat", authApiKey, async (req, res) => {
-  const request_id = req.context?.requestId;
-  const project_id = req.params.projectId;
-  const project = getProject(project_id);
-  if (!project) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在" }, request_id));
-
-  const { message, systemInstruction, model } = req.body;
-  if (!message) return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "缺少聊天内容" }, request_id));
-
-  // Save user message
-  const userMsg = addChatMessage(project_id, "user", message);
-
-  try {
-    const history = listChatMessages(project_id);
-    const currentProfile = getCustomerProfile(project_id);
-    const pastHistory = history.slice(0, -1);
-    const startTime = Date.now();
-
-    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-    res.setHeader("Cache-Control", "no-cache, no-transform");
-    res.setHeader("Connection", "keep-alive");
-    res.flushHeaders?.();
-
-    res.write(`data: ${JSON.stringify({ type: "userMsg", message: userMsg })}\n\n`);
-
-    let finalReply = "";
-    let updates = {};
-
-    for await (const event of streamChatWithGemini(systemInstruction, pastHistory, message, currentProfile, project_id, model)) {
-      if (event.chunk) {
-        finalReply = event.fullText || finalReply + event.chunk;
-        res.write(`data: ${JSON.stringify({ type: "chunk", chunk: event.chunk, fullText: event.fullText || finalReply })}\n\n`);
-      }
-
-      if (event.done) {
-        finalReply = event.finalReply || finalReply;
-        updates = event.updates || {};
-      }
-    }
-
-    const latency_ms = Date.now() - startTime;
-    const aiMessage = addChatMessage(project_id, "model", finalReply || "（系统未返回回复内容）", latency_ms, null);
-    const newProfile = getCustomerProfile(project_id);
-
-    res.write(`data: ${JSON.stringify({ type: "done", message: aiMessage, updates, profile: newProfile })}\n\n`);
-    res.end();
-  } catch (e) {
-    console.error(e);
-    if (!res.headersSent) {
-      res.status(500).json(fail({ code: ErrorCodes.INTERNAL_ERROR, message: String(e) }, request_id));
-      return;
-    }
-
-    res.write(`data: ${JSON.stringify({ type: "error", message: String(e) })}\n\n`);
-    res.end();
-  }
+  return handleProjectChat(req, res, "positioning", { profileMode: true });
 });
 
 app.delete("/api/v1/projects/:projectId/positioning/chat/:messageId", authApiKey, (req, res) => {
@@ -196,7 +206,32 @@ app.delete("/api/v1/projects/:projectId/positioning/chat/:messageId", authApiKey
   const project = getProject(projectId);
   if (!project) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在" }, request_id));
 
-  const success = deleteChatMessage(messageId, projectId);
+  const success = deleteChatMessage(messageId, projectId, "positioning");
+  if (!success) {
+    return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "消息不存在或已删除" }, request_id));
+  }
+
+  res.json(ok({ deleted: true }, request_id));
+});
+
+app.get("/api/v1/projects/:projectId/free-chat", authApiKey, (req, res) => {
+  const request_id = req.context?.requestId;
+  const project = getProject(req.params.projectId);
+  if (!project) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在" }, request_id));
+  res.json(ok({ items: listChatMessages(project.id, "free_chat") }, request_id));
+});
+
+app.post("/api/v1/projects/:projectId/free-chat", authApiKey, async (req, res) => {
+  return handleProjectChat(req, res, "free_chat", { profileMode: false });
+});
+
+app.delete("/api/v1/projects/:projectId/free-chat/:messageId", authApiKey, (req, res) => {
+  const request_id = req.context?.requestId;
+  const { projectId, messageId } = req.params;
+  const project = getProject(projectId);
+  if (!project) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在" }, request_id));
+
+  const success = deleteChatMessage(messageId, projectId, "free_chat");
   if (!success) {
     return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "消息不存在或已删除" }, request_id));
   }

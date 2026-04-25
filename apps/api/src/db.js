@@ -63,6 +63,7 @@ export function initDb() {
     CREATE TABLE IF NOT EXISTS chat_messages (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL,
+      chat_type TEXT NOT NULL DEFAULT 'positioning',
       role TEXT NOT NULL,
       content TEXT NOT NULL,
       latency_ms INTEGER,
@@ -74,6 +75,12 @@ export function initDb() {
     -- Add new columns if they don't exist (using try-catch pattern in sqlite via altering is limited, so we do it safely if possible)
     -- In SQLite, we can just run ALTER TABLE, but it will throw if it exists. So we ignore errors or use pragma.
   `);
+
+  try {
+    db.exec(`ALTER TABLE chat_messages ADD COLUMN chat_type TEXT NOT NULL DEFAULT 'positioning';`);
+  } catch (e) {
+    // Column might already exist
+  }
 
   try {
     db.exec(`ALTER TABLE chat_messages ADD COLUMN latency_ms INTEGER;`);

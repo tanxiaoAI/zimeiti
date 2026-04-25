@@ -41,9 +41,9 @@ export function updateCustomerProfile(project_id, updates) {
   return getCustomerProfile(project_id);
 }
 
-export function addChatMessage(project_id, role, content, latency_ms = null, total_tokens = null) {
+export function addChatMessage(project_id, role, content, latency_ms = null, total_tokens = null, chat_type = "positioning") {
   const id = `msg_${nanoid(12)}`;
-  db.prepare("INSERT INTO chat_messages (id, project_id, role, content, latency_ms, total_tokens) VALUES (?, ?, ?, ?, ?, ?)").run(id, project_id, role, content, latency_ms, total_tokens);
+  db.prepare("INSERT INTO chat_messages (id, project_id, chat_type, role, content, latency_ms, total_tokens) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, project_id, chat_type, role, content, latency_ms, total_tokens);
   return getChatMessage(id);
 }
 
@@ -51,13 +51,13 @@ export function getChatMessage(id) {
   return db.prepare("SELECT * FROM chat_messages WHERE id = ?").get(id) || null;
 }
 
-export function deleteChatMessage(id, project_id) {
-  const result = db.prepare("DELETE FROM chat_messages WHERE id = ? AND project_id = ?").run(id, project_id);
+export function deleteChatMessage(id, project_id, chat_type = "positioning") {
+  const result = db.prepare("DELETE FROM chat_messages WHERE id = ? AND project_id = ? AND chat_type = ?").run(id, project_id, chat_type);
   return result.changes > 0;
 }
 
-export function listChatMessages(project_id) {
-  return db.prepare("SELECT * FROM chat_messages WHERE project_id = ? ORDER BY created_at ASC").all(project_id);
+export function listChatMessages(project_id, chat_type = "positioning") {
+  return db.prepare("SELECT * FROM chat_messages WHERE project_id = ? AND chat_type = ? ORDER BY created_at ASC").all(project_id, chat_type);
 }
 
 export function saveAccountProfile(project_id, positioning_json) {

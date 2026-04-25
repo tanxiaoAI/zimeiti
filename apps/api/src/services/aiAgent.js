@@ -25,14 +25,12 @@ function resolveModelConfig(targetModel) {
   };
 }
 
-export async function* streamChatWithGemini(systemInstruction, history, newMessage, currentProfile, projectId, targetModel) {
-  const { actualModelName, useGptsChatApi } = resolveModelConfig(targetModel);
+function estimateTokensFromText(text) {
+  return Math.max(1, Math.ceil((text || "").length / 4));
+}
 
-  const API_URL = useGptsChatApi
-    ? `${GPTS_API_BASE_URL}/v1/chat/completions`
-    : `https://api.ricoxueai.cn/v1beta/models/${actualModelName}:streamGenerateContent?alt=sse`;
-
-  const instruction = `${systemInstruction || "你是账号定位专家。"}
+function buildPositioningInstruction(systemInstruction, currentProfile) {
+  return `${systemInstruction || "你是账号定位专家。"}
       
 【重要规则】
 你在回复时，除了像人类一样自然地与用户对话外，还必须根据用户的回答，自动提取并更新“客户档案”。
@@ -64,6 +62,23 @@ export async function* streamChatWithGemini(systemInstruction, history, newMessa
 如果你需要参考之前的档案：
 ${JSON.stringify(currentProfile, null, 2)}
 `;
+}
+
+function buildChatInstruction(systemInstruction) {
+  return systemInstruction || "你是一个专业、友好、简洁的中文助手。";
+}
+
+export async function* streamChatWithGemini(systemInstruction, history, newMessage, currentProfile, projectId, targetModel, options = {}) {
+  const { actualModelName, useGptsChatApi } = resolveModelConfig(targetModel);
+  const profileMode = options.profileMode !== false;
+
+  const API_URL = useGptsChatApi
+    ? `${GPTS_API_BASE_URL}/v1/chat/completions`
+    : `https://api.ricoxueai.cn/v1beta/models/${actualModelName}:streamGenerateContent?alt=sse`;
+
+  const instruction = profileMode
+    ? buildPositioningInstruction(systemInstruction, currentProfile)
+    : buildChatInstruction(systemInstruction);
 
   const contents = [];
   contents.push({ role: 'user', parts: [{ text: instruction }] });
@@ -120,6 +135,7 @@ ${JSON.stringify(currentProfile, null, 2)}
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
   let fullText = "";
+  let usage = null;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -137,6 +153,8 @@ ${JSON.stringify(currentProfile, null, 2)}
         
         try {
           const data = JSON.parse(dataStr);
+          const streamUsage = data.usage || data.x_gpts_usage || null;
+          if (streamUsage) usage = streamUsage;
           let textChunk = "";
           if (useGptsChatApi) {
             textChunk = data.choices?.[0]?.delta?.content || "";
@@ -161,46 +179,56 @@ ${JSON.stringify(currentProfile, null, 2)}
   
   // Remove <think> blocks
   const cleanText = fullText.replace(/<think>[\s\S]*?<\/think>/gi, '');
-  
-  const replyMatch = cleanText.match(/<reply>([\s\S]*?)<\/reply>/);
-  if (replyMatch) {
-    replyText = replyMatch[1].trim();
-  } else if (!cleanText.includes("<profile>")) {
-    replyText = cleanText.trim();
-  } else {
-    replyText = cleanText.split("<profile>")[0].replace("<reply>", "").trim();
-  }
+  const updates = {};
 
-  const profileMatch = cleanText.match(/<profile>([\s\S]*?)<\/profile>/);
-  if (profileMatch) {
-    try {
-      profileJson = JSON.parse(profileMatch[1].trim());
-    } catch (e) {
-      console.error("Failed to parse profile JSON");
+  if (profileMode) {
+    const replyMatch = cleanText.match(/<reply>([\s\S]*?)<\/reply>/);
+    if (replyMatch) {
+      replyText = replyMatch[1].trim();
+    } else if (!cleanText.includes("<profile>")) {
+      replyText = cleanText.trim();
+    } else {
+      replyText = cleanText.split("<profile>")[0].replace("<reply>", "").trim();
     }
-  } else {
-      // Fallback: look for JSON anywhere
+
+    const profileMatch = cleanText.match(/<profile>([\s\S]*?)<\/profile>/);
+    if (profileMatch) {
+      try {
+        profileJson = JSON.parse(profileMatch[1].trim());
+      } catch (e) {
+        console.error("Failed to parse profile JSON");
+      }
+    } else {
       const jsonMatch = cleanText.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
-          try {
-             profileJson = JSON.parse(jsonMatch[0]);
-             replyText = replyText.replace(jsonMatch[0], '').trim();
-          } catch(e){}
+        try {
+          profileJson = JSON.parse(jsonMatch[0]);
+          replyText = replyText.replace(jsonMatch[0], "").trim();
+        } catch (e) {}
       }
-  }
-
-  const updates = {};
-  for (const [key, value] of Object.entries(profileJson)) {
-    if (value && value.trim() !== "" && value !== "..." && value !== "null") {
-      updates[key] = value;
     }
+
+    for (const [key, value] of Object.entries(profileJson)) {
+      if (value && value.trim() !== "" && value !== "..." && value !== "null") {
+        updates[key] = value;
+      }
+    }
+
+    if (Object.keys(updates).length > 0) {
+      updateCustomerProfile(projectId, updates);
+    }
+  } else {
+    replyText = cleanText.trim() || "（系统未返回回复内容）";
   }
 
-  if (Object.keys(updates).length > 0) {
-    updateCustomerProfile(projectId, updates);
-  }
+  const estimatedUsage = usage || {
+    prompt_tokens: estimateTokensFromText(instruction) + history.reduce((sum, msg) => sum + estimateTokensFromText(msg.content), 0) + estimateTokensFromText(newMessage),
+    completion_tokens: estimateTokensFromText(replyText),
+    total_tokens: 0
+  };
+  estimatedUsage.total_tokens = estimatedUsage.total_tokens || (estimatedUsage.prompt_tokens + estimatedUsage.completion_tokens);
 
-  yield { done: true, finalReply: replyText || "（系统未返回回复内容）", updates };
+  yield { done: true, finalReply: replyText || "（系统未返回回复内容）", updates, usage: estimatedUsage };
 }
 
 
