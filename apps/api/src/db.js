@@ -43,6 +43,23 @@ export function initDb() {
       FOREIGN KEY(project_id) REFERENCES projects(id)
     );
 
+    
+    CREATE TABLE IF NOT EXISTS video_teardowns (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      url TEXT,
+      title TEXT,
+      content TEXT,
+      date_published TEXT,
+      cover_image TEXT,
+      user_name TEXT,
+      video_url TEXT,
+      local_video_path TEXT,
+      ai_analysis TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(project_id) REFERENCES projects(id)
+    );
+
     CREATE TABLE IF NOT EXISTS chat_messages (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL,

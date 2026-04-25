@@ -12,7 +12,7 @@ const NAV_GROUPS = [
     label: "账号与资产",
     items: [
       { id: "positioning", title: "账号定位", icon: UserCheck },
-      { id: "teardown", title: "对标拆解", icon: Scissors },
+      { id: "teardown", title: "视频内容拆解", icon: Scissors },
     ]
   },
   {
@@ -84,7 +84,7 @@ export default function App() {
   const renderContent = () => {
     switch (activeNav) {
       case "positioning": return <PositioningView activeAccountId={activeAccountId} />;
-      case "teardown": return <TeardownView />;
+      case "teardown": return <TeardownView activeAccountId={activeAccountId} />;
       case "hot": return <HotView onUseKeyword={(kw) => { setActiveNav("topics"); }} />;
       case "topics": return <TopicsView onSelectTopic={handleTopicSelect} />;
       case "editor": return <EditorView topic={activeTopic} />;
@@ -333,11 +333,11 @@ function ConfigView() {
   const [constraintValue, setConstraintValue] = useState("");
   const [greetingValue, setGreetingValue] = useState("");
   const [fileName, setFileName] = useState("");
-  const [selectedModel, setSelectedModel] = useState("gemini-3.1-flash-lite-preview");
+  const [selectedModel, setSelectedModel] = useState("claude-opus-4-6");
 
   const configOptions = [
     { id: "positioning", title: "账号定位生成" },
-    { id: "teardown", title: "账号对标拆解" },
+    { id: "teardown", title: "视频内容拆解" },
     { id: "topics", title: "选题池生成" },
     { id: "title", title: "标题生成" },
     { id: "hook", title: "开头 (Hook) 生成" },
@@ -351,7 +351,7 @@ function ConfigView() {
     if (savedModel) {
       setSelectedModel(savedModel);
     } else {
-      setSelectedModel("gemini-3.1-flash-lite-preview");
+      setSelectedModel("claude-opus-4-6");
     }
 
     const savedPrompt = localStorage.getItem(`config_${activeTab}_prompt`);
@@ -432,8 +432,11 @@ function ConfigView() {
               value={selectedModel}
               onChange={e => setSelectedModel(e.target.value)}
             >
+              <option value="claude-opus-4-6">claude-opus-4-6</option>
               <option value="gemini-3.1-flash-lite-preview">gemini-3.1-flash-lite-preview</option>
               <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview</option>
+              <option value="gemini-3-flash-preview">【GPTs API】gemini-3-flash-preview</option>
+              <option value="gpts-gemini-3.1-pro-preview">【GPTs API】gemini-3.1-pro-preview</option>
             </select>
             <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: 8 }}>
               该模块调用大语言模型时所使用的具体底层模型。
@@ -670,7 +673,7 @@ function PositioningView({ activeAccountId }: { activeAccountId: string }) {
     setMessages(prev => [...prev, { id: tempId, role: "user", content: msg }]);
 
     try {
-      const savedModel = localStorage.getItem('config_positioning_model') || "gemini-3.1-flash-lite-preview";
+      const savedModel = localStorage.getItem('config_positioning_model') || "claude-opus-4-6";
       const savedPrompt = localStorage.getItem('config_positioning_prompt') || "你是一个资深的自媒体账号定位专家。你的目标是和用户对话，帮他们梳理出账号的赛道、人设和内容支柱。";
       const savedConstraint = localStorage.getItem('config_positioning_constraint') || "";
       
@@ -684,15 +687,55 @@ function PositioningView({ activeAccountId }: { activeAccountId: string }) {
         },
         body: JSON.stringify({ message: msg, systemInstruction, model: savedModel })
       });
-      const data = await res.json();
-      if (res.ok && data.success !== false) {
-        setMessages(prev => {
-          const filtered = prev.filter(m => m.id !== tempId);
-          return [...filtered, data.data.userMessage, data.data.reply];
-        });
-        setProfile(data.data.profile || {});
-      } else {
-        throw new Error(data.error?.message || data.message || "接口返回异常");
+
+      if (!res.ok) throw new Error("网络请求失败");
+
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error("无法读取流");
+      const decoder = new TextDecoder("utf-8");
+      
+      let fullReply = "";
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split("\n");
+        
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            const dataStr = line.slice(6).trim();
+            if (!dataStr) continue;
+            try {
+              const data = JSON.parse(dataStr);
+              if (data.type === "userMsg") {
+                setMessages(prev => prev.map(m => m.id === tempId ? data.message : m));
+                // 插入一个临时的 AI 消息
+                setMessages(prev => [...prev, { id: "temp_ai", role: "model", content: "" }]);
+              } else if (data.type === "chunk") {
+                let currentText = data.fullText;
+                currentText = currentText.replace(/<think>[\s\S]*?(?:<\/think>)?/gi, '');
+                const replyMatch = currentText.match(/<reply>([\s\S]*?)(?:<\/reply>)?/);
+                if (replyMatch) {
+                   fullReply = replyMatch[1];
+                } else if (!currentText.includes("<reply>") && !currentText.includes("<profile>")) {
+                   fullReply = currentText; 
+                }
+                setMessages(prev => prev.map(m => m.id === "temp_ai" ? { ...m, content: fullReply } : m));
+              } else if (data.type === "done") {
+                setMessages(prev => prev.map(m => m.id === "temp_ai" ? data.message : m));
+                if (data.profile) setProfile(data.profile);
+                setLoading(false);
+                return;
+              } else if (data.type === "error") {
+                throw new Error(data.message);
+              }
+            } catch (e) {
+               // ignore partial JSON parse error
+            }
+          }
+        }
       }
     } catch (e: any) {
       console.error(e);
@@ -914,36 +957,276 @@ function PositioningView({ activeAccountId }: { activeAccountId: string }) {
   );
 }
 
-function TeardownView() {
+function TeardownView({ activeAccountId }: { activeAccountId: string }) {
+  const [activeTab, setActiveTab] = useState<"link" | "local">("link");
+  const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<string>("");
+  const [analyzing, setAnalyzing] = useState(false);
+  const [teardownData, setTeardownData] = useState<any>(null);
 
-  const handleTeardown = async () => {
+  const fetchHistory = async () => {
+    if (!activeAccountId) return;
+    try {
+      const res = await fetch(`/api/v1/projects/${activeAccountId}/video-teardown`, {
+        headers: { "X-API-Key": "demo-key" }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        // 这里为了简单，我们只展示最近一次的记录，或者如果需要可以做历史列表
+        if (data.data?.items?.length > 0) {
+          setTeardownData(data.data.items[0]);
+        }
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  useEffect(() => {
+    fetchHistory();
+  }, [activeAccountId]);
+
+  const handleParse = async () => {
+    if (!url) return;
     setLoading(true);
-    await sleep(1500);
-    setResult("【结构拆解】\n1. 钩子 (0-3s)：展示加班惨状，抛出痛点。\n2. 引入 (3-10s)：提出“其实是因为没用对工具”。\n3. 干货 (10-30s)：分3点演示软件操作，强视觉冲击。\n4. CTA (30-35s)：引导评论区求软件清单。\n\n【标题公式】\n[人群]必备！[数字]个让你[爽点]的[类别]神器\n\n【已保存为复用模板】");
-    setLoading(false);
+    try {
+      const res = await fetch(`/api/v1/projects/${activeAccountId}/video-teardown/parse`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-API-Key": "demo-key"
+        },
+        body: JSON.stringify({ url })
+      });
+      const data = await res.json();
+      if (res.ok && data.success !== false) {
+        setTeardownData(data.data);
+      } else {
+        alert(data.message || data.error?.message || "解析失败");
+      }
+    } catch (e: any) {
+      alert("解析异常: " + e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const extractVideoFrame = (file: File): Promise<string> => {
+    return new Promise((resolve) => {
+      const video = document.createElement('video');
+      video.preload = 'metadata';
+      video.muted = true;
+      video.playsInline = true;
+      video.src = URL.createObjectURL(file);
+      video.onloadeddata = () => {
+        video.currentTime = 0.5; 
+      };
+      video.onseeked = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth || 640;
+        canvas.height = video.videoHeight || 360;
+        const ctx = canvas.getContext('2d');
+        ctx?.drawImage(video, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', 0.8));
+        URL.revokeObjectURL(video.src);
+      };
+      video.onerror = () => {
+        resolve('');
+        URL.revokeObjectURL(video.src);
+      };
+    });
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setLoading(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      try {
+        const coverBase64 = await extractVideoFrame(file);
+        if (coverBase64) {
+          formData.append("cover_image", coverBase64);
+        }
+      } catch (err) {
+        console.error("Frame extraction failed:", err);
+      }
+      
+      const res = await fetch(`/api/v1/projects/${activeAccountId}/video-teardown/upload`, {
+        method: "POST",
+        headers: {
+          "X-API-Key": "demo-key"
+        },
+        body: formData
+      });
+      const data = await res.json();
+      if (res.ok && data.success !== false) {
+        setTeardownData(data.data);
+      } else {
+        alert(data.message || data.error?.message || "上传失败");
+      }
+    } catch (e: any) {
+      alert("上传异常: " + e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAnalyze = async () => {
+    if (!teardownData || !teardownData.id) return;
+    setAnalyzing(true);
+    try {
+      const savedModel = localStorage.getItem('config_teardown_model') || "claude-opus-4-6";
+      const savedPrompt = localStorage.getItem('config_teardown_prompt') || "你是一个资深的视频内容拆解专家。请仔细分析提供的视频标题、内容、作者等信息，总结出这篇内容的钩子、结构、亮点和可复用模板。";
+      const savedConstraint = localStorage.getItem('config_teardown_constraint') || "";
+      const systemInstruction = savedPrompt + (savedConstraint ? `\n\n补充要求：\n${savedConstraint}` : "");
+
+      const res = await fetch(`/api/v1/projects/${activeAccountId}/video-teardown/${teardownData.id}/analyze`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-API-Key": "demo-key"
+        },
+        body: JSON.stringify({ systemInstruction, model: savedModel })
+      });
+      const data = await res.json();
+      if (res.ok && data.success !== false) {
+        setTeardownData(data.data);
+      } else {
+        alert(data.message || data.error?.message || "分析失败");
+      }
+    } catch (e: any) {
+      alert("分析异常: " + e.message);
+    } finally {
+      setAnalyzing(false);
+    }
   };
 
   return (
     <div>
       <div className="page-header">
-        <h2>账号与爆款拆解</h2>
-        <p>输入对标账号或爆款笔记链接，抽取可复用的选题模式与标题公式。</p>
+        <h2>视频内容拆解</h2>
+        <p>通过上传视频链接或本地视频，自动解析并调用大模型进行深度内容拆解。</p>
       </div>
-      <div className="card">
-        <div className="form-row">
-          <label>小红书笔记链接 / 文本</label>
-          <textarea className="input-field" placeholder="粘贴小红书笔记链接或图文内容..." />
-        </div>
-        <button className="btn-primary" onClick={handleTeardown} disabled={loading}>开始拆解</button>
 
-        {result && (
-          <div className="result-box" style={{ marginTop: 24 }}>
-            {result}
+      <div className="card" style={{ marginBottom: 24 }}>
+        <div style={{ display: 'flex', gap: 16, marginBottom: 16, borderBottom: '1px solid var(--border-light)', paddingBottom: 12 }}>
+          <button 
+            className={`nav-item ${activeTab === "link" ? 'active' : ''}`}
+            style={{ padding: '8px 16px', margin: 0, background: activeTab === "link" ? 'var(--bg-hover)' : 'transparent' }}
+            onClick={() => setActiveTab("link")}
+          >
+            链接解析 (小红书/抖音)
+          </button>
+          <button 
+            className={`nav-item ${activeTab === "local" ? 'active' : ''}`}
+            style={{ padding: '8px 16px', margin: 0, background: activeTab === "local" ? 'var(--bg-hover)' : 'transparent' }}
+            onClick={() => setActiveTab("local")}
+          >
+            上传本地视频
+          </button>
+        </div>
+
+        {activeTab === "link" ? (
+          <div className="form-row">
+            <label>视频链接</label>
+            <div style={{ display: 'flex', gap: 12 }}>
+              <input 
+                className="input-field" 
+                style={{ flex: 1 }} 
+                placeholder="例如: https://www.xiaohongshu.com/explore/..." 
+                value={url}
+                onChange={e => setUrl(e.target.value)}
+              />
+              <button className="btn-primary" onClick={handleParse} disabled={loading || !url}>
+                {loading ? '解析中...' : '下载并解析'}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="form-row">
+            <label>选择本地视频</label>
+            <div className="upload-area" style={{ padding: '32px', textAlign: 'center', border: '2px dashed var(--border-light)', borderRadius: 8, background: 'var(--bg-app)' }}>
+              <UploadCloud size={32} color="var(--text-muted)" style={{ marginBottom: 12 }} />
+              <div style={{ marginBottom: 16 }}>点击或拖拽视频文件到此处上传</div>
+              <label className="btn-primary" style={{ cursor: 'pointer', display: 'inline-block' }}>
+                <input type="file" accept="video/*" style={{ display: 'none' }} onChange={handleFileUpload} disabled={loading} />
+                {loading ? '上传中...' : '上传视频'}
+              </label>
+              {loading && <div style={{ marginTop: 12, color: 'var(--accent)' }}>视频正在上传和处理中，请稍候...</div>}
+            </div>
           </div>
         )}
       </div>
+
+      {teardownData && (
+        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h3 style={{ margin: 0 }}>解析结果</h3>
+            <div style={{ display: 'flex', gap: 12 }}>
+              {(teardownData.video_url || teardownData.local_video_path) && (
+                <a 
+                  href={teardownData.local_video_path || teardownData.video_url} 
+                  target="_blank" 
+                  rel="noreferrer" 
+                  download
+                  className="btn-ghost" 
+                  style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+                >
+                  <UploadCloud size={16} style={{ transform: 'rotate(180deg)' }} /> 下载视频
+                </a>
+              )}
+              <button className="btn-primary" onClick={handleAnalyze} disabled={analyzing} style={{ background: 'var(--accent)', borderColor: 'var(--accent)' }}>
+                <Sparkles size={16} /> {analyzing ? '分析中...' : '视频分析'}
+              </button>
+            </div>
+          </div>
+          
+          <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+            {/* 左侧：封面或视频 */}
+            <div style={{ width: '280px', flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {teardownData.cover_image && (
+                <div>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: 4 }}>封面图</div>
+                  <img src={teardownData.cover_image} alt="封面" style={{ width: '100%', borderRadius: 8, objectFit: 'cover', border: '1px solid var(--border-light)' }} />
+                </div>
+              )}
+
+            </div>
+
+            {/* 右侧：信息与分析结果 */}
+            <div style={{ flex: 1, minWidth: '300px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div style={{ background: 'var(--bg-app)', padding: 16, borderRadius: 8, border: '1px solid var(--border-light)' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '80px 1fr', gap: '8px 16px', fontSize: '0.9rem' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>标题：</span>
+                  <span style={{ fontWeight: 600 }}>{teardownData.title}</span>
+                  
+                  <span style={{ color: 'var(--text-muted)' }}>作者：</span>
+                  <span>{teardownData.user_name}</span>
+                  
+                  <span style={{ color: 'var(--text-muted)' }}>发布时间：</span>
+                  <span>{teardownData.date_published}</span>
+                  
+                  <span style={{ color: 'var(--text-muted)' }}>内容描述：</span>
+                  <span style={{ whiteSpace: 'pre-wrap', maxHeight: 100, overflowY: 'auto' }}>{teardownData.content}</span>
+                </div>
+              </div>
+
+              {teardownData.ai_analysis && (
+                <div className="result-box" style={{ flex: 1, background: 'var(--primary-light)', borderColor: 'var(--primary)', color: 'var(--text-main)' }}>
+                  <h4 style={{ color: 'var(--primary)', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Sparkles size={16} /> AI 拆解报告
+                  </h4>
+                  <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6, fontSize: '0.95rem' }}>
+                    {teardownData.ai_analysis}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

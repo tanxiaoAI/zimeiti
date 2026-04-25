@@ -42,7 +42,9 @@ import {
   addChatMessage,
   deleteChatMessage
 } from "./services/appStore.js";
-import { chatWithGemini } from "./services/aiAgent.js";
+import { addVideoTeardown, listVideoTeardowns, getVideoTeardown, updateVideoTeardown, deleteVideoTeardown } from "./services/appStore.js";
+
+import { streamChatWithGemini, analyzeVideoWithGemini } from "./services/aiAgent.js";
 import { getLlmProvider } from "./providers/llm/index.js";
 import { getHotProvider } from "./providers/hot/index.js";
 import { getCoverProvider } from "./providers/cover/index.js";
@@ -60,6 +62,7 @@ app.use(requestContext);
 
 // 静态资源（封面SVG/PNG占位）
 app.use("/static", express.static(path.join(__dirname, "..", "public", "static")));
+app.use("/static/uploads", express.static(path.join(__dirname, "..", "public", "uploads")));
 
 // 静态资源（前端构建产物）
 let webDistPath = path.join(__dirname, "..", "dist");
@@ -72,7 +75,7 @@ app.get("/health", (req, res) => {
   res.json({ ok: true, request_id: req.context?.requestId });
 });
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500 * 1024 * 1024 } });
 
 // -----------------------
 // API v1
@@ -144,24 +147,46 @@ app.post("/api/v1/projects/:projectId/positioning/chat", authApiKey, async (req,
   try {
     const history = listChatMessages(project_id);
     const currentProfile = getCustomerProfile(project_id);
-    
-    // Pass everything up to the new user message
     const pastHistory = history.slice(0, -1);
-
     const startTime = Date.now();
-    const { reply, updates, usage } = await chatWithGemini(systemInstruction, pastHistory, message, currentProfile, project_id, model);
-    const latency_ms = Date.now() - startTime;
-    
-    // Save AI reply with metrics
-    const aiMessage = addChatMessage(project_id, "model", reply, latency_ms, usage?.total_tokens || null);
 
-    // Get the updated profile
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders?.();
+
+    res.write(`data: ${JSON.stringify({ type: "userMsg", message: userMsg })}\n\n`);
+
+    let finalReply = "";
+    let updates = {};
+
+    for await (const event of streamChatWithGemini(systemInstruction, pastHistory, message, currentProfile, project_id, model)) {
+      if (event.chunk) {
+        finalReply = event.fullText || finalReply + event.chunk;
+        res.write(`data: ${JSON.stringify({ type: "chunk", chunk: event.chunk, fullText: event.fullText || finalReply })}\n\n`);
+      }
+
+      if (event.done) {
+        finalReply = event.finalReply || finalReply;
+        updates = event.updates || {};
+      }
+    }
+
+    const latency_ms = Date.now() - startTime;
+    const aiMessage = addChatMessage(project_id, "model", finalReply || "（系统未返回回复内容）", latency_ms, null);
     const newProfile = getCustomerProfile(project_id);
 
-    res.json(ok({ reply: aiMessage, updates, profile: newProfile, userMessage: userMsg }, request_id));
+    res.write(`data: ${JSON.stringify({ type: "done", message: aiMessage, updates, profile: newProfile })}\n\n`);
+    res.end();
   } catch (e) {
     console.error(e);
-    res.status(500).json(fail({ code: ErrorCodes.INTERNAL_ERROR, message: String(e) }, request_id));
+    if (!res.headersSent) {
+      res.status(500).json(fail({ code: ErrorCodes.INTERNAL_ERROR, message: String(e) }, request_id));
+      return;
+    }
+
+    res.write(`data: ${JSON.stringify({ type: "error", message: String(e) })}\n\n`);
+    res.end();
   }
 });
 
@@ -310,6 +335,150 @@ app.post("/api/v1/drafts/:id/body:generate", authApiKey, validateBody(BodyGenera
     status: "ok"
   });
   res.json(ok({ blocks: saved.body_blocks?.blocks || [], citations }, request_id));
+});
+
+
+// Video Teardown Routes
+app.get("/api/v1/projects/:projectId/video-teardown", authApiKey, (req, res) => {
+  const request_id = req.context?.requestId;
+  const project = getProject(req.params.projectId);
+  if (!project) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在" }, request_id));
+  res.json(ok({ items: listVideoTeardowns(project.id) }, request_id));
+});
+
+app.post("/api/v1/projects/:projectId/video-teardown/parse", authApiKey, async (req, res) => {
+  const request_id = req.context?.requestId;
+  const project = getProject(req.params.projectId);
+  if (!project) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在" }, request_id));
+  
+  const { url } = req.body;
+  if (!url) return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "缺少url参数" }, request_id));
+
+  try {
+    
+    const response = await fetch("https://videoparser2.p.rapidapi.com/api/media", {
+      method: "POST",
+      headers: {
+        "x-rapidapi-key": "079b6bc2f2msh2d9995646bf2483p190e49jsndf0d32e9281c",
+        "x-rapidapi-host": "videoparser2.p.rapidapi.com",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ url })
+    });
+    const resJson = await response.json();
+    if (!resJson || !resJson.data) {
+       throw new Error("解析失败，无有效数据");
+    }
+    const result = resJson.data;
+
+    // 找到分辨率最低的视频 URL
+    let lowestVideoUrl = "";
+    if (result.video_url) {
+      lowestVideoUrl = result.video_url;
+    } else if (result.medias && result.medias.length > 0) {
+      const firstMedia = result.medias[0];
+      if (firstMedia.variants && firstMedia.variants.length > 0) {
+        const sorted = firstMedia.variants.sort((a, b) => (a.size || 0) - (b.size || 0));
+        lowestVideoUrl = sorted[0].url || sorted[0].video_url;
+      } else {
+        lowestVideoUrl = firstMedia.url || firstMedia.video_url;
+      }
+    } else if (result.url && result.url.includes('.mp4')) {
+      lowestVideoUrl = result.url;
+    }
+
+    // 构建并保存数据
+    const dataToSave = {
+      url: url,
+      title: result.title || "未知标题",
+      content: result.content || result.desc || "",
+      date_published: result.date_published || result.create_time || "",
+      cover_image: result.cover_image || result.cover_url || result.cover || "",
+      user_name: result.user_name || result.author?.nickname || "未知作者",
+      video_url: lowestVideoUrl || "",
+      local_video_path: "" // 后续若需要可自行下载后更新该字段
+    };
+
+    const saved = addVideoTeardown(project.id, dataToSave);
+    res.json(ok(saved, request_id));
+  } catch (e) {
+    console.error(e);
+    res.status(500).json(fail({ code: ErrorCodes.INTERNAL_ERROR, message: "解析视频信息失败：" + e.message }, request_id));
+  }
+});
+
+app.post("/api/v1/projects/:projectId/video-teardown/upload", authApiKey, upload.single("file"), (req, res) => {
+  const request_id = req.context?.requestId;
+  const project = getProject(req.params.projectId);
+  if (!project) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在" }, request_id));
+  if (!req.file) return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "缺少file" }, request_id));
+  
+  try {
+    
+    // 模拟将 buffer 保存为本地文件，这里只记录元数据
+    // 解决 ENAMETOOLONG 问题：截断文件名或生成唯一短 ID
+    const ext = path.extname(req.file.originalname);
+    const safeName = Date.now() + "_" + Math.random().toString(36).substring(2, 8) + ext;
+    const local_video_path = safeName;
+    
+    // 我们在此简单保存到 uploads 目录，假设有这个目录
+    const uploadDir = path.join(__dirname, "..", "public", "uploads");
+    if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+    fs.writeFileSync(path.join(uploadDir, local_video_path), req.file.buffer);
+
+    const dataToSave = {
+      url: "",
+      title: Buffer.from(req.file.originalname, "latin1").toString("utf8"),
+      content: "",
+      date_published: new Date().toISOString(),
+      cover_image: req.body.cover_image || "",
+      user_name: "本地上传",
+      video_url: "",
+      local_video_path: "/static/uploads/" + local_video_path
+    };
+
+    const saved = addVideoTeardown(project.id, dataToSave);
+    res.json(ok(saved, request_id));
+  } catch (e) {
+    console.error(e);
+    res.status(500).json(fail({ code: ErrorCodes.INTERNAL_ERROR, message: "上传失败：" + e.message }, request_id));
+  }
+});
+
+app.post("/api/v1/projects/:projectId/video-teardown/:id/analyze", authApiKey, async (req, res) => {
+  const request_id = req.context?.requestId;
+  const project = getProject(req.params.projectId);
+  if (!project) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在" }, request_id));
+  
+  const teardown = getVideoTeardown(req.params.id);
+  if (!teardown || teardown.project_id !== project.id) {
+    return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "拆解记录不存在" }, request_id));
+  }
+
+  const { systemInstruction, model } = req.body;
+  if (!systemInstruction) return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "缺少 systemInstruction" }, request_id));
+
+  try {
+    const reply = await analyzeVideoWithGemini(systemInstruction, teardown, model);
+    
+    const updated = updateVideoTeardown(teardown.id, { ai_analysis: reply });
+    res.json(ok(updated, request_id));
+  } catch (e) {
+    console.error(e);
+    res.status(500).json(fail({ code: ErrorCodes.INTERNAL_ERROR, message: "AI分析失败：" + e.message }, request_id));
+  }
+});
+
+app.delete("/api/v1/projects/:projectId/video-teardown/:id", authApiKey, (req, res) => {
+  const request_id = req.context?.requestId;
+  const project = getProject(req.params.projectId);
+  if (!project) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在" }, request_id));
+  
+  const success = deleteVideoTeardown(req.params.id, project.id);
+  if (!success) {
+    return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "删除失败，记录不存在" }, request_id));
+  }
+  res.json(ok({ deleted: true }, request_id));
 });
 
 // capabilities/hot

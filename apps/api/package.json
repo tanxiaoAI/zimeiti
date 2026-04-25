@@ -3,8 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node src/server.js",
-    "start": "NODE_ENV=production node src/server.js",
+    "dev": "node --env-file=../../.env src/server.js",
+    "start": "NODE_ENV=production node --env-file=../../.env src/server.js",
     "build": "cd ../../ && npm install --include=dev && npm run build && rm -rf apps/api/dist && cp -R apps/web/dist apps/api/dist",
     "lint": "node -c src/server.js"
   },

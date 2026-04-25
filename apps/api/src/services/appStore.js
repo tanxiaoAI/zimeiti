@@ -128,3 +128,40 @@ export function listGenerationLogs({ user_id, project_id, limit = 50 }) {
     .reverse();
 }
 
+
+
+export function addVideoTeardown(project_id, data) {
+  const id = nanoid();
+  const stmt = db.prepare(`
+    INSERT INTO video_teardowns (id, project_id, url, title, content, date_published, cover_image, user_name, video_url, local_video_path)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  stmt.run(id, project_id, data.url || "", data.title || "", data.content || "", data.date_published || "", data.cover_image || "", data.user_name || "", data.video_url || "", data.local_video_path || "");
+  return getVideoTeardown(id);
+}
+
+export function getVideoTeardown(id) {
+  return db.prepare('SELECT * FROM video_teardowns WHERE id = ?').get(id);
+}
+
+export function listVideoTeardowns(project_id) {
+  return db.prepare('SELECT * FROM video_teardowns WHERE project_id = ? ORDER BY created_at DESC').all(project_id);
+}
+
+export function updateVideoTeardown(id, updates) {
+  const fields = [];
+  const values = [];
+  for (const [k, v] of Object.entries(updates)) {
+    fields.push(`${k} = ?`);
+    values.push(v);
+  }
+  if (fields.length === 0) return getVideoTeardown(id);
+  values.push(id);
+  db.prepare(`UPDATE video_teardowns SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+  return getVideoTeardown(id);
+}
+
+export function deleteVideoTeardown(id, project_id) {
+  const res = db.prepare('DELETE FROM video_teardowns WHERE id = ? AND project_id = ?').run(id, project_id);
+  return res.changes > 0;
+}
