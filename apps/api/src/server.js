@@ -10,6 +10,7 @@ import { validateBody } from "./middlewares/validate.js";
 import { ok, fail } from "@ai-media/shared/contracts";
 import { ErrorCodes } from "@ai-media/shared/errors";
 import multer from "multer";
+import { uploadsDir } from "./dataPaths.js";
 
 import {
   LoginSchema,
@@ -64,7 +65,7 @@ app.use(requestContext);
 
 // 静态资源（封面SVG/PNG占位）
 app.use("/static", express.static(path.join(__dirname, "..", "public", "static")));
-app.use("/static/uploads", express.static(path.join(__dirname, "..", "public", "uploads")));
+app.use("/static/uploads", express.static(uploadsDir));
 
 // 静态资源（前端构建产物）
 let webDistPath = path.join(__dirname, "..", "dist");
@@ -501,9 +502,8 @@ app.post("/api/v1/projects/:projectId/video-teardown/upload", authApiKey, upload
     const local_video_path = safeName;
     
     // 我们在此简单保存到 uploads 目录，假设有这个目录
-    const uploadDir = path.join(__dirname, "..", "public", "uploads");
-    if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-    fs.writeFileSync(path.join(uploadDir, local_video_path), req.file.buffer);
+    if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+    fs.writeFileSync(path.join(uploadsDir, local_video_path), req.file.buffer);
 
     const dataToSave = {
       url: "",

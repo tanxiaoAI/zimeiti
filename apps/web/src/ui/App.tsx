@@ -67,7 +67,7 @@ function clearProjectScopedConfig(accountId: string) {
 }
 
 export default function App() {
-  const [activeNav, setActiveNav] = useState("positioning");
+  const [activeNav, setActiveNav] = useState("freeChat");
   const [activeTopic, setActiveTopic] = useState<any>(null);
   const [isConfigOpen, setIsConfigOpen] = useState(false);
   const [isAccountDropdownOpen, setIsAccountDropdownOpen] = useState(false);
@@ -423,7 +423,7 @@ export default function App() {
 }
 
 function ConfigView({ activeAccountId }: { activeAccountId: string }) {
-  const [activeTab, setActiveTab] = useState("positioning");
+  const [activeTab, setActiveTab] = useState("free_chat");
   const [promptValue, setPromptValue] = useState("");
   const [constraintValue, setConstraintValue] = useState("");
   const [greetingValue, setGreetingValue] = useState("");

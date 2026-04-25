@@ -1,12 +1,8 @@
 import fs from "node:fs/promises";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { nanoid } from "nanoid";
+import { kbStorageDir } from "../dataPaths.js";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const storageDir = process.env.STORAGE_DIR || path.resolve(__dirname, "..", "..", ".data");
-const docsDir = path.join(storageDir, "kb");
+const docsDir = kbStorageDir;
 
 const documents = new Map(); // doc_id -> {id, project_id, filename, status, created_at}
 const chunks = []; // {chunk_id, document_id, project_id, text, locator, created_at}
