@@ -66,6 +66,19 @@ function clearProjectScopedConfig(accountId: string) {
   }
 }
 
+async function readApiResponse(response: Response) {
+  const rawText = await response.text();
+  let json: any = null;
+
+  try {
+    json = rawText ? JSON.parse(rawText) : null;
+  } catch {
+    json = null;
+  }
+
+  return { rawText, json };
+}
+
 export default function App() {
   const [activeNav, setActiveNav] = useState("freeChat");
   const [activeTopic, setActiveTopic] = useState<any>(null);
@@ -536,9 +549,13 @@ function ConfigView({ activeAccountId }: { activeAccountId: string }) {
         headers: { "X-API-Key": "demo-key" },
         body: formData
       });
-      const uploadJson = await uploadRes.json();
-      if (!uploadRes.ok || uploadJson.success === false || uploadJson.error) {
-        throw new Error(uploadJson.message || uploadJson.error?.message || "上传失败");
+      const uploadPayload = await readApiResponse(uploadRes);
+      const uploadJson = uploadPayload.json;
+      if (!uploadRes.ok || uploadJson?.success === false || uploadJson?.error) {
+        const fallbackMessage = uploadPayload.rawText?.trim().startsWith("<!DOCTYPE")
+          ? `服务返回了 HTML 错误页，状态码 ${uploadRes.status}`
+          : (uploadPayload.rawText || "").slice(0, 120);
+        throw new Error(uploadJson?.message || uploadJson?.error?.message || fallbackMessage || "上传失败");
       }
 
       const uploadedDoc = uploadJson.data;
@@ -548,9 +565,13 @@ function ConfigView({ activeAccountId }: { activeAccountId: string }) {
         method: "POST",
         headers: { "X-API-Key": "demo-key" }
       });
-      const processJson = await processRes.json();
-      if (!processRes.ok || processJson.success === false || processJson.error) {
-        throw new Error(processJson.message || processJson.error?.message || "索引失败");
+      const processPayload = await readApiResponse(processRes);
+      const processJson = processPayload.json;
+      if (!processRes.ok || processJson?.success === false || processJson?.error) {
+        const fallbackMessage = processPayload.rawText?.trim().startsWith("<!DOCTYPE")
+          ? `服务返回了 HTML 错误页，状态码 ${processRes.status}`
+          : (processPayload.rawText || "").slice(0, 120);
+        throw new Error(processJson?.message || processJson?.error?.message || fallbackMessage || "索引失败");
       }
 
       const processedDoc = processJson.data;

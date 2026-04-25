@@ -598,15 +598,25 @@ app.post("/api/v1/kb/documents", authApiKey, upload.single("file"), async (req, 
   const project_id = String(req.body.project_id || "");
   if (!project_id) return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "缺少project_id" }, request_id));
   if (!req.file) return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "缺少file" }, request_id));
-  const doc = await createDocument({ project_id, originalname: req.file.originalname, buffer: req.file.buffer });
-  res.json(ok(doc, request_id));
+  try {
+    const doc = await createDocument({ project_id, originalname: req.file.originalname, buffer: req.file.buffer });
+    res.json(ok(doc, request_id));
+  } catch (e) {
+    console.error(e);
+    res.status(500).json(fail({ code: ErrorCodes.INTERNAL_ERROR, message: `知识库上传失败：${e.message}` }, request_id));
+  }
 });
 
 app.post("/api/v1/kb/documents/:id/process", authApiKey, async (req, res) => {
   const request_id = req.context?.requestId;
-  const out = await processDocument(req.params.id);
-  if (!out) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "文档不存在" }, request_id));
-  res.json(ok(out, request_id));
+  try {
+    const out = await processDocument(req.params.id);
+    if (!out) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "文档不存在" }, request_id));
+    res.json(ok(out, request_id));
+  } catch (e) {
+    console.error(e);
+    res.status(500).json(fail({ code: ErrorCodes.INTERNAL_ERROR, message: `知识库索引失败：${e.message}` }, request_id));
+  }
 });
 
 app.post("/api/v1/kb/search", authApiKey, validateBody(RagSearchSchema), (req, res) => {
@@ -626,6 +636,14 @@ app.get("/api/v1/generation-logs", authApiKey, (req, res) => {
 // API 兜底404 (仅处理 /api 前缀的请求)
 app.use("/api", (req, res) => {
   res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "Not Found" }, req.context?.requestId));
+});
+
+app.use((err, req, res, next) => {
+  console.error(err);
+  if (res.headersSent) return next(err);
+  res
+    .status(err.status || 500)
+    .json(fail({ code: ErrorCodes.INTERNAL_ERROR, message: err.message || "服务器内部错误" }, req.context?.requestId));
 });
 
 // 所有其他未匹配的请求全部返回 index.html（支持前端路由）
