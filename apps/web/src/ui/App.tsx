@@ -82,6 +82,179 @@ function decodeDisplayFilename(filename: string) {
   return filename;
 }
 
+function renderInlineRichText(text: string) {
+  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).filter(Boolean);
+
+  return parts.map((part, index) => {
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return (
+        <strong key={index} style={{ fontWeight: 800, color: 'inherit' }}>
+          {part.slice(2, -2)}
+        </strong>
+      );
+    }
+
+    if (part.startsWith("`") && part.endsWith("`")) {
+      return (
+        <code
+          key={index}
+          style={{
+            background: 'rgba(15, 23, 42, 0.08)',
+            border: '1px solid rgba(15, 23, 42, 0.08)',
+            borderRadius: 6,
+            padding: '0.12rem 0.38rem',
+            fontSize: '0.9em',
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace'
+          }}
+        >
+          {part.slice(1, -1)}
+        </code>
+      );
+    }
+
+    return <React.Fragment key={index}>{part}</React.Fragment>;
+  });
+}
+
+function RichMessageContent({ content, isUser = false }: { content: string; isUser?: boolean }) {
+  const lines = (content || "").replace(/\r\n/g, "\n").split("\n");
+  const elements: React.ReactNode[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      i += 1;
+      continue;
+    }
+
+    if (trimmed.startsWith("```")) {
+      const codeLines: string[] = [];
+      const language = trimmed.slice(3).trim();
+      i += 1;
+      while (i < lines.length && !lines[i].trim().startsWith("```")) {
+        codeLines.push(lines[i]);
+        i += 1;
+      }
+      i += 1;
+      elements.push(
+        <div key={`code-${i}`} style={{ margin: '10px 0' }}>
+          {language && <div style={{ fontSize: '0.72rem', opacity: 0.7, marginBottom: 6 }}>{language}</div>}
+          <pre
+            style={{
+              margin: 0,
+              padding: '14px 16px',
+              borderRadius: 14,
+              background: isUser ? 'rgba(255,255,255,0.14)' : '#0f172a',
+              color: isUser ? 'rgba(255,255,255,0.96)' : '#e2e8f0',
+              overflowX: 'auto',
+              fontSize: '0.84rem',
+              lineHeight: 1.7,
+              boxShadow: isUser ? 'none' : 'inset 0 0 0 1px rgba(148,163,184,0.14)'
+            }}
+          >
+            <code>{codeLines.join("\n")}</code>
+          </pre>
+        </div>
+      );
+      continue;
+    }
+
+    if (/^#{1,3}\s/.test(trimmed)) {
+      const level = trimmed.match(/^#+/)?.[0].length || 1;
+      const title = trimmed.replace(/^#{1,3}\s*/, "");
+      const size = level === 1 ? '1.18rem' : level === 2 ? '1.05rem' : '0.98rem';
+      elements.push(
+        <div key={`heading-${i}`} style={{ fontSize: size, fontWeight: 800, margin: '14px 0 8px', letterSpacing: '-0.01em' }}>
+          {renderInlineRichText(title)}
+        </div>
+      );
+      i += 1;
+      continue;
+    }
+
+    if (trimmed.startsWith(">")) {
+      const quoteLines: string[] = [];
+      while (i < lines.length && lines[i].trim().startsWith(">")) {
+        quoteLines.push(lines[i].trim().replace(/^>\s?/, ""));
+        i += 1;
+      }
+      elements.push(
+        <blockquote
+          key={`quote-${i}`}
+          style={{
+            margin: '12px 0',
+            padding: '10px 14px',
+            borderLeft: isUser ? '3px solid rgba(255,255,255,0.5)' : '3px solid var(--primary)',
+            background: isUser ? 'rgba(255,255,255,0.08)' : 'rgba(37,99,235,0.06)',
+            borderRadius: 10,
+            color: 'inherit'
+          }}
+        >
+          {quoteLines.map((quoteLine, idx) => (
+            <div key={idx} style={{ marginTop: idx === 0 ? 0 : 6 }}>
+              {renderInlineRichText(quoteLine)}
+            </div>
+          ))}
+        </blockquote>
+      );
+      continue;
+    }
+
+    if (/^(\-|\*|\d+\.)\s+/.test(trimmed)) {
+      const items: { type: 'ul' | 'ol'; text: string }[] = [];
+      while (i < lines.length && /^(\-|\*|\d+\.)\s+/.test(lines[i].trim())) {
+        const current = lines[i].trim();
+        items.push({
+          type: /^\d+\./.test(current) ? 'ol' : 'ul',
+          text: current.replace(/^(\-|\*|\d+\.)\s+/, "")
+        });
+        i += 1;
+      }
+      const ordered = items.every((item) => item.type === 'ol');
+      const ListTag = ordered ? 'ol' : 'ul';
+      elements.push(
+        <ListTag
+          key={`list-${i}`}
+          style={{
+            margin: '10px 0 10px 1.1rem',
+            paddingLeft: '0.4rem',
+            lineHeight: 1.8
+          }}
+        >
+          {items.map((item, idx) => (
+            <li key={idx} style={{ marginBottom: 4 }}>
+              {renderInlineRichText(item.text)}
+            </li>
+          ))}
+        </ListTag>
+      );
+      continue;
+    }
+
+    const paragraphLines: string[] = [];
+    while (i < lines.length && lines[i].trim() && !/^#{1,3}\s/.test(lines[i].trim()) && !lines[i].trim().startsWith(">") && !/^(\-|\*|\d+\.)\s+/.test(lines[i].trim()) && !lines[i].trim().startsWith("```")) {
+      paragraphLines.push(lines[i]);
+      i += 1;
+    }
+
+    elements.push(
+      <p key={`p-${i}`} style={{ margin: '0 0 12px', lineHeight: 1.85 }}>
+        {paragraphLines.map((paragraphLine, idx) => (
+          <React.Fragment key={idx}>
+            {idx > 0 && <br />}
+            {renderInlineRichText(paragraphLine)}
+          </React.Fragment>
+        ))}
+      </p>
+    );
+  }
+
+  return <div>{elements}</div>;
+}
+
 async function readApiResponse(response: Response) {
   const rawText = await response.text();
   let json: any = null;
@@ -1022,7 +1195,7 @@ function PositioningView({ activeAccountId }: { activeAccountId: string }) {
                 fontSize: '0.95rem',
                 whiteSpace: 'pre-wrap'
               }}>
-                {m.content}
+                {m.role === 'model' ? <RichMessageContent content={m.content} /> : <RichMessageContent content={m.content} isUser />}
               </div>
               
               <div style={{ 
@@ -1171,6 +1344,7 @@ function FreeChatView({ activeAccountId }: { activeAccountId: string }) {
   const [inputValue, setInputValue] = useState("");
   const [loading, setLoading] = useState(false);
   const [latestCitations, setLatestCitations] = useState<any[]>([]);
+  const [mountedFile, setMountedFile] = useState<any>(null);
   const chatEndRef = React.useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -1184,6 +1358,7 @@ function FreeChatView({ activeAccountId }: { activeAccountId: string }) {
   useEffect(() => {
     if (activeAccountId) {
       fetchChat();
+      fetchMountedFile();
     }
   }, [activeAccountId]);
 
@@ -1199,6 +1374,23 @@ function FreeChatView({ activeAccountId }: { activeAccountId: string }) {
       }
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const fetchMountedFile = async () => {
+    try {
+      const res = await fetch(`/api/v1/projects/${activeAccountId}/context-file?module_key=free_chat`, {
+        headers: { "X-API-Key": "demo-key" }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setMountedFile(data.data || null);
+      } else {
+        setMountedFile(null);
+      }
+    } catch (e) {
+      console.error(e);
+      setMountedFile(null);
     }
   };
 
@@ -1319,6 +1511,12 @@ function FreeChatView({ activeAccountId }: { activeAccountId: string }) {
         <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--border-light)', marginBottom: 16 }}>
           <h2 style={{ fontSize: '1.2rem', fontWeight: 800 }}>自由对话</h2>
           <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>支持多轮连续交流，适合临时咨询、头脑风暴、任务拆解与日常问答。</p>
+          {mountedFile && (
+            <div style={{ marginTop: 12, display: 'inline-flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 999, background: 'rgba(37,99,235,0.08)', border: '1px solid rgba(37,99,235,0.14)', fontSize: '0.82rem', color: 'var(--text-main)' }}>
+              <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--success)' }} />
+              当前已挂载：{decodeDisplayFilename(mountedFile.filename)} · {Math.ceil((mountedFile.size_bytes || 0) / 1024)} KB
+            </div>
+          )}
         </div>
 
         <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 16, paddingRight: 8 }}>
@@ -1340,7 +1538,7 @@ function FreeChatView({ activeAccountId }: { activeAccountId: string }) {
                 fontSize: '0.95rem',
                 whiteSpace: 'pre-wrap'
               }}>
-                {m.content}
+                {m.role === 'model' ? <RichMessageContent content={m.content} /> : <RichMessageContent content={m.content} isUser />}
               </div>
 
               <div style={{
