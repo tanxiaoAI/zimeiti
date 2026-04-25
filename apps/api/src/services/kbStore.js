@@ -1,8 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { nanoid } from "nanoid";
 
-const storageDir = process.env.STORAGE_DIR || path.join(process.cwd(), "apps", "api", ".data");
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const storageDir = process.env.STORAGE_DIR || path.resolve(__dirname, "..", "..", ".data");
 const docsDir = path.join(storageDir, "kb");
 
 const documents = new Map(); // doc_id -> {id, project_id, filename, status, created_at}
@@ -10,6 +13,31 @@ const chunks = []; // {chunk_id, document_id, project_id, text, locator, created
 
 async function ensureDirs() {
   await fs.mkdir(docsDir, { recursive: true });
+}
+
+function tokenizeQuery(query) {
+  const normalized = (query || "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .trim();
+
+  const baseTokens = normalized.split(/\s+/).filter(Boolean);
+  const expandedTokens = new Set(baseTokens);
+
+  for (const token of baseTokens) {
+    const cjkRuns = token.match(/[\p{Script=Han}]{2,}/gu) || [];
+    for (const run of cjkRuns) {
+      expandedTokens.add(run);
+      for (let i = 0; i < run.length - 1; i += 1) {
+        expandedTokens.add(run.slice(i, i + 2));
+      }
+      for (let i = 0; i < run.length - 2; i += 1) {
+        expandedTokens.add(run.slice(i, i + 3));
+      }
+    }
+  }
+
+  return [...expandedTokens].filter((token) => token.length >= 2);
 }
 
 export async function createDocument({ project_id, originalname, buffer }) {
@@ -63,13 +91,14 @@ export async function processDocument(document_id) {
 export function search({ project_id, query, top_k = 5 }) {
   const q = (query || "").trim();
   if (!q) return [];
-  const terms = q.split(/\s+/).filter(Boolean);
+  const terms = tokenizeQuery(q);
+  if (terms.length === 0) return [];
 
   const scored = chunks
     .filter((c) => c.project_id === project_id)
     .map((c) => {
       const textLower = c.text.toLowerCase();
-      const score = terms.reduce((acc, t) => acc + (textLower.includes(t.toLowerCase()) ? 1 : 0), 0);
+      const score = terms.reduce((acc, t) => acc + (textLower.includes(t) ? Math.max(1, t.length - 1) : 0), 0);
       return { ...c, score };
     })
     .filter((c) => c.score > 0)

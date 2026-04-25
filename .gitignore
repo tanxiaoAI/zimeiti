@@ -2,6 +2,7 @@ node_modules/
 dist/
 .env
 .env.*
+apps/api/.data/
 *.sqlite
 *.sqlite3
 .DS_Store

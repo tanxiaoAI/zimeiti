@@ -94,6 +94,32 @@ async function handleProjectChat(req, res, chatType, options = {}) {
     const currentProfile = options.profileMode === false ? null : getCustomerProfile(project_id);
     const pastHistory = history.slice(0, -1);
     const startTime = Date.now();
+    let citations = [];
+    let finalSystemInstruction = systemInstruction;
+
+    if (options.kbEnabled) {
+      citations = kbSearch({
+        project_id,
+        query: message,
+        top_k: options.kbTopK || 4
+      });
+
+      if (citations.length > 0) {
+        const kbContext = citations
+          .map((hit, index) => {
+            const source = `${hit.source?.filename || "未知文件"} ${hit.source?.locator?.para ? `第${hit.source.locator.para}段` : ""}`.trim();
+            return `[参考${index + 1}] ${source}\n${hit.text}`;
+          })
+          .join("\n\n");
+
+        finalSystemInstruction = `${systemInstruction || "你是一个专业、友好、简洁的中文助手。"}
+
+【知识库参考】
+请优先参考以下项目知识库内容回答；如果命中内容不足，再结合通用能力补充，但不要虚构文档中不存在的事实。
+
+${kbContext}`;
+      }
+    }
 
     res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
     res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -106,7 +132,7 @@ async function handleProjectChat(req, res, chatType, options = {}) {
     let updates = {};
     let usage = null;
 
-    for await (const event of streamChatWithGemini(systemInstruction, pastHistory, message, currentProfile, project_id, model, options)) {
+    for await (const event of streamChatWithGemini(finalSystemInstruction, pastHistory, message, currentProfile, project_id, model, options)) {
       if (event.chunk) {
         finalReply = event.fullText || finalReply + event.chunk;
         res.write(`data: ${JSON.stringify({ type: "chunk", chunk: event.chunk, fullText: event.fullText || finalReply })}\n\n`);
@@ -122,7 +148,7 @@ async function handleProjectChat(req, res, chatType, options = {}) {
     const latency_ms = Date.now() - startTime;
     const total_tokens = usage?.total_tokens || null;
     const aiMessage = addChatMessage(project_id, "model", finalReply || "（系统未返回回复内容）", latency_ms, total_tokens, chatType);
-    const payload = { type: "done", message: aiMessage, updates };
+    const payload = { type: "done", message: aiMessage, updates, citations };
 
     if (options.profileMode !== false) {
       payload.profile = getCustomerProfile(project_id);
@@ -223,7 +249,7 @@ app.get("/api/v1/projects/:projectId/free-chat", authApiKey, (req, res) => {
 });
 
 app.post("/api/v1/projects/:projectId/free-chat", authApiKey, async (req, res) => {
-  return handleProjectChat(req, res, "free_chat", { profileMode: false });
+  return handleProjectChat(req, res, "free_chat", { profileMode: false, kbEnabled: true, kbTopK: 4 });
 });
 
 app.delete("/api/v1/projects/:projectId/free-chat/:messageId", authApiKey, (req, res) => {

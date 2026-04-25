@@ -1046,6 +1046,7 @@ function FreeChatView({ activeAccountId }: { activeAccountId: string }) {
   const [messages, setMessages] = useState<any[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [loading, setLoading] = useState(false);
+  const [latestCitations, setLatestCitations] = useState<any[]>([]);
   const chatEndRef = React.useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -1070,6 +1071,7 @@ function FreeChatView({ activeAccountId }: { activeAccountId: string }) {
       if (res.ok) {
         const data = await res.json();
         setMessages(data.data?.items || []);
+        setLatestCitations([]);
       }
     } catch (e) {
       console.error(e);
@@ -1101,6 +1103,7 @@ function FreeChatView({ activeAccountId }: { activeAccountId: string }) {
     if (textarea) textarea.style.height = 'auto';
 
     setLoading(true);
+    setLatestCitations([]);
     const tempId = `temp_${Date.now()}`;
     setMessages(prev => [...prev, { id: tempId, role: "user", content: msg }]);
 
@@ -1149,6 +1152,7 @@ function FreeChatView({ activeAccountId }: { activeAccountId: string }) {
               setMessages(prev => prev.map(m => m.id === "temp_ai" ? { ...m, content: fullReply } : m));
             } else if (data.type === "done") {
               setMessages(prev => prev.map(m => m.id === "temp_ai" ? data.message : m));
+              setLatestCitations(data.citations || []);
               setLoading(false);
               return;
             } else if (data.type === "error") {
@@ -1241,6 +1245,21 @@ function FreeChatView({ activeAccountId }: { activeAccountId: string }) {
                   </button>
                 )}
               </div>
+              {m.role === 'model' && i === messages.length - 1 && latestCitations.length > 0 && (
+                <div style={{ marginTop: 8, padding: '10px 12px', background: 'var(--bg-app)', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-sm)' }}>
+                  <div style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: 6 }}>
+                    已参考知识库
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {latestCitations.map((citation, idx) => (
+                      <div key={`${citation.chunk_id || idx}`} style={{ fontSize: '0.8rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                        {idx + 1}. {citation.source?.filename || '未知文件'}
+                        {citation.source?.locator?.para ? ` · 第${citation.source.locator.para}段` : ''}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           ))}
           {loading && (
