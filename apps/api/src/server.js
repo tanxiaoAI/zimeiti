@@ -75,6 +75,20 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 
+function getRequiredEnv(name) {
+  const value = String(process.env[name] || "").trim();
+  if (!value) {
+    throw new Error(`Missing required env: ${name}`);
+  }
+  return value;
+}
+
+function buildPreviewText(value, maxLength = 240) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+}
+
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 app.use(requestContext);
@@ -581,7 +595,7 @@ app.post("/api/v1/projects/:projectId/generate-cover", authApiKey, upload.single
     const imageUrl = `${protocol}://${host}/static/uploads/${filename}`;
 
     // 调用 GPTS API 提交生图请求
-    const apiKey = process.env.GPTS_API_KEY || "sk-gf0b55ed57f88401d11c6ea2f96e345c00c2ddfa5b8z4XfJ";
+    const apiKey = getRequiredEnv("GPTS_API_KEY");
     const gptsRes = await fetch("https://api.gptsapi.net/api/v3/google/gemini-3.1-flash-image-preview/image-edit", {
       method: "POST",
       headers: {
@@ -612,7 +626,7 @@ app.get("/api/v1/projects/:projectId/generate-cover/:resultId", authApiKey, asyn
   const request_id = req.context?.requestId;
   try {
     const { resultId } = req.params;
-    const apiKey = process.env.GPTS_API_KEY || "sk-gf0b55ed57f88401d11c6ea2f96e345c00c2ddfa5b8z4XfJ";
+    const apiKey = getRequiredEnv("GPTS_API_KEY");
     const gptsRes = await fetch(`https://api.gptsapi.net/api/v3/predictions/${resultId}/result`, {
       method: "GET",
       headers: {
@@ -1136,6 +1150,8 @@ app.post("/api/v1/projects/:projectId/topic-library/extract", authApiKey, async 
 
 app.post("/api/v1/projects/:projectId/topic-library/analyze", authApiKey, async (req, res) => {
   const request_id = req.context?.requestId;
+  const user_id = req.context?.userId;
+  const project_id = req.params.projectId;
   const { systemInstruction, models, topicName, refContent } = req.body;
   const normalizedRefContent = String(refContent || "").trim() || "无";
   
@@ -1143,14 +1159,67 @@ app.post("/api/v1/projects/:projectId/topic-library/analyze", authApiKey, async 
   
   try {
     const promises = models.map(async (model) => {
+      const startedAt = Date.now();
       try {
-        const result = await analyzeTopicLibraryContent(
+        const analysis = await analyzeTopicLibraryContent(
           systemInstruction || "你是一个资深自媒体内容分析师。",
           { topicName, refContent: normalizedRefContent },
           model
         );
-        return { model, result, error: null };
+
+        addGenerationLog({
+          user_id,
+          project_id,
+          feature: "topic_library.analyze",
+          provider: "llm",
+          mode: analysis.apiMode,
+          request_id,
+          status: "ok",
+          request_json: {
+            model,
+            topic_name: topicName || "",
+            ref_content_preview: buildPreviewText(normalizedRefContent),
+            prompt_preview: buildPreviewText(systemInstruction || "你是一个资深自媒体内容分析师。")
+          },
+          response_json: {
+            actual_model: analysis.actualModelName,
+            api_mode: analysis.apiMode,
+            latency_ms: Date.now() - startedAt,
+            usage: analysis.usage,
+            estimated_cost_usd: analysis.estimated_cost_usd,
+            result_preview: buildPreviewText(analysis.text)
+          }
+        });
+
+        return {
+          model,
+          result: analysis.text,
+          error: null,
+          usage: analysis.usage,
+          estimated_cost_usd: analysis.estimated_cost_usd,
+          api_mode: analysis.apiMode
+        };
       } catch (e) {
+        addGenerationLog({
+          user_id,
+          project_id,
+          feature: "topic_library.analyze",
+          provider: "llm",
+          mode: null,
+          request_id,
+          status: "error",
+          request_json: {
+            model,
+            topic_name: topicName || "",
+            ref_content_preview: buildPreviewText(normalizedRefContent),
+            prompt_preview: buildPreviewText(systemInstruction || "你是一个资深自媒体内容分析师。")
+          },
+          response_json: {
+            latency_ms: Date.now() - startedAt,
+            error: e.message
+          }
+        });
+
         return { model, result: null, error: e.message };
       }
     });
@@ -1161,6 +1230,22 @@ app.post("/api/v1/projects/:projectId/topic-library/analyze", authApiKey, async 
     console.error(e);
     res.status(500).json(fail({ code: ErrorCodes.INTERNAL_ERROR, message: "AI分析失败：" + e.message }, request_id));
   }
+});
+
+app.get("/api/v1/projects/:projectId/topic-library/analyze-logs", authApiKey, (req, res) => {
+  const request_id = req.context?.requestId;
+  const user_id = req.context?.userId;
+  const project_id = req.params.projectId;
+  const limit = req.query.limit ? Number(req.query.limit) : 50;
+
+  res.json(ok({
+    items: listGenerationLogs({
+      user_id,
+      project_id,
+      feature: "topic_library.analyze",
+      limit
+    })
+  }, request_id));
 });
 
 // capabilities/hot
@@ -1260,8 +1345,9 @@ app.get("/api/v1/generation-logs", authApiKey, (req, res) => {
   const request_id = req.context?.requestId;
   const user_id = req.context?.userId;
   const project_id = req.query.project_id ? String(req.query.project_id) : undefined;
+  const feature = req.query.feature ? String(req.query.feature) : undefined;
   const limit = req.query.limit ? Number(req.query.limit) : 50;
-  res.json(ok({ items: listGenerationLogs({ user_id, project_id, limit }) }, request_id));
+  res.json(ok({ items: listGenerationLogs({ user_id, project_id, feature, limit }) }, request_id));
 });
 
 // API 兜底404 (仅处理 /api 前缀的请求)

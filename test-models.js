@@ -1,5 +1,9 @@
-const GEMINI_API_KEY = "sk-KaylVs0oxM2tbPfJBm5bazob2BJliUzSZH1oIkBcKz3R5NzC";
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const API_URL = "https://api.ricoxueai.cn/v1/chat/completions";
+
+if (!GEMINI_API_KEY) {
+  throw new Error("Missing required env: GEMINI_API_KEY");
+}
 
 async function checkAvailableModels() {
   try {

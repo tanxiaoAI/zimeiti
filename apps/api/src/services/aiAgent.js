@@ -1,8 +1,6 @@
 import { updateCustomerProfile } from "./appStore.js";
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "sk-KaylVs0oxM2tbPfJBm5bazob2BJliUzSZH1oIkBcKz3R5NzC";
 const GPTS_API_BASE_URL = (process.env.GPTS_API_BASE_URL || "https://api.gptsapi.net").replace(/\/$/, "");
-const GPTS_API_KEY = process.env.GPTS_API_KEY || "sk-gf0b55ed57f88401d11c6ea2f96e345c00c2ddfa5b8z4XfJ";
 const DEFAULT_MODEL = process.env.DEFAULT_LLM_MODEL || "claude-opus-4-6";
 
 const GPTS_MODEL_ALIASES = {
@@ -12,6 +10,38 @@ const GPTS_MODEL_ALIASES = {
 const GPTS_MESSAGES_MODELS = new Set([
   "claude-sonnet-4-6-thinking"
 ]);
+
+const MODEL_PRICING_USD_PER_MILLION = {
+  "claude-opus-4-6": { input: 5, output: 25 },
+  "claude-opus-4-7": { input: 5, output: 25 },
+  "claude-sonnet-4-6": { input: 3, output: 15 },
+  "claude-sonnet-4-6-thinking": { input: 3, output: 15 },
+  "gpt-5.4": { input: 2.5, output: 15 },
+  "gpt-5.5": { input: 5, output: 30 },
+  "gemini-3.1-pro-preview": { input: 2, output: 12 },
+  "gpts-gemini-3.1-pro-preview": { input: 2, output: 12 }
+};
+
+function getRequiredEnv(name) {
+  const value = String(process.env[name] || "").trim();
+  if (!value) {
+    throw new Error(`Missing required env: ${name}`);
+  }
+  return value;
+}
+
+function estimateUsdCost(modelName, usage) {
+  const pricing = MODEL_PRICING_USD_PER_MILLION[modelName];
+  if (!pricing || !usage) return null;
+
+  const promptTokens = Number(usage.prompt_tokens || 0);
+  const completionTokens = Number(usage.completion_tokens || 0);
+  const cost =
+    (promptTokens / 1_000_000) * pricing.input +
+    (completionTokens / 1_000_000) * pricing.output;
+
+  return Number(cost.toFixed(6));
+}
 
 function isNativeGeminiModel(modelName) {
   return modelName === "gemini-3.1-flash-lite-preview" || modelName === "gemini-3.1-pro-preview";
@@ -86,7 +116,8 @@ function buildChatInstruction(systemInstruction) {
 }
 
 export async function* streamChatWithGemini(systemInstruction, history, newMessage, currentProfile, projectId, targetModel, options = {}) {
-  const { actualModelName, useGptsChatApi, useGptsMessagesApi } = resolveModelConfig(targetModel);
+  const modelConfig = resolveModelConfig(targetModel);
+  const { actualModelName, useGptsChatApi, useGptsMessagesApi, apiMode } = modelConfig;
   const profileMode = options.profileMode !== false;
 
   const API_URL = useGptsChatApi
@@ -114,6 +145,7 @@ export async function* streamChatWithGemini(systemInstruction, history, newMessa
   let payload, headers;
 
   if (useGptsChatApi) {
+    const apiKey = getRequiredEnv("GPTS_API_KEY");
     const messages = [];
     messages.push({ role: 'system', content: instruction });
     for (const msg of history) {
@@ -129,9 +161,10 @@ export async function* streamChatWithGemini(systemInstruction, history, newMessa
     };
     headers = {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${GPTS_API_KEY}`
+      "Authorization": `Bearer ${apiKey}`
     };
   } else if (useGptsMessagesApi) {
+    const apiKey = getRequiredEnv("GPTS_API_KEY");
     const messages = [];
     messages.push({ role: 'user', content: `${instruction}\n\n请先确认你已理解以上规则，然后继续回答用户问题。` });
     messages.push({ role: 'assistant', content: "好的，我已理解规则。" });
@@ -147,13 +180,14 @@ export async function* streamChatWithGemini(systemInstruction, history, newMessa
     };
     headers = {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${GPTS_API_KEY}`
+      "Authorization": `Bearer ${apiKey}`
     };
   } else {
+    const apiKey = getRequiredEnv("GEMINI_API_KEY");
     payload = { contents: contents };
     headers = {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${GEMINI_API_KEY}`
+      "Authorization": `Bearer ${apiKey}`
     };
   }
 
@@ -287,7 +321,8 @@ export async function* streamChatWithGemini(systemInstruction, history, newMessa
 
 
 export async function analyzeVideoWithGemini(systemInstruction, teardown, targetModel) {
-  const { actualModelName, useGptsChatApi, useGptsMessagesApi } = resolveModelConfig(targetModel);
+  const modelConfig = resolveModelConfig(targetModel);
+  const { actualModelName, useGptsChatApi, useGptsMessagesApi } = modelConfig;
 
   const API_URL = useGptsChatApi
     ? `${GPTS_API_BASE_URL}/v1/chat/completions`
@@ -300,11 +335,13 @@ export async function analyzeVideoWithGemini(systemInstruction, teardown, target
     promptText += `\n视频原始链接：${teardown.video_url}`;
   }
 
-  return await callLlmWithPrompt(API_URL, actualModelName, { useGptsChatApi, useGptsMessagesApi }, systemInstruction, promptText, teardown.cover_image);
+  const response = await callLlmWithPrompt(API_URL, actualModelName, modelConfig, systemInstruction, promptText, teardown.cover_image);
+  return response.text;
 }
 
 export async function analyzeTopicLibraryContent(systemInstruction, topicData, targetModel) {
-  const { actualModelName, useGptsChatApi, useGptsMessagesApi } = resolveModelConfig(targetModel);
+  const modelConfig = resolveModelConfig(targetModel);
+  const { actualModelName, useGptsChatApi, useGptsMessagesApi } = modelConfig;
 
   const API_URL = useGptsChatApi
     ? `${GPTS_API_BASE_URL}/v1/chat/completions`
@@ -325,14 +362,15 @@ export async function analyzeTopicLibraryContent(systemInstruction, topicData, t
     topicData?.refContent || "未填写"
   ].join("\n");
 
-  return await callLlmWithPrompt(API_URL, actualModelName, { useGptsChatApi, useGptsMessagesApi }, systemInstruction, promptText);
+  return await callLlmWithPrompt(API_URL, actualModelName, modelConfig, systemInstruction, promptText);
 }
 
 async function callLlmWithPrompt(API_URL, actualModelName, apiConfig, systemInstruction, promptText, cover_image = null) {
-  const { useGptsChatApi, useGptsMessagesApi } = apiConfig;
+  const { useGptsChatApi, useGptsMessagesApi, apiMode, modelName } = apiConfig;
   let payload, headers;
 
   if (useGptsChatApi) {
+    const apiKey = getRequiredEnv("GPTS_API_KEY");
     const userContent = cover_image
       ? [
           { type: "text", text: promptText },
@@ -350,9 +388,10 @@ async function callLlmWithPrompt(API_URL, actualModelName, apiConfig, systemInst
     };
     headers = {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${GPTS_API_KEY}`
+      "Authorization": `Bearer ${apiKey}`
     };
   } else if (useGptsMessagesApi) {
+    const apiKey = getRequiredEnv("GPTS_API_KEY");
     let userContent = `${promptText}`;
     if (cover_image) {
       userContent += `\n\n参考图片链接：${cover_image}`;
@@ -366,9 +405,10 @@ async function callLlmWithPrompt(API_URL, actualModelName, apiConfig, systemInst
     };
     headers = {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${GPTS_API_KEY}`
+      "Authorization": `Bearer ${apiKey}`
     };
   } else {
+    const apiKey = getRequiredEnv("GEMINI_API_KEY");
     const parts = [{ text: systemInstruction + "\n\n" + promptText }];
     
     if (cover_image && cover_image.startsWith('data:image')) {
@@ -387,7 +427,7 @@ async function callLlmWithPrompt(API_URL, actualModelName, apiConfig, systemInst
     payload = { contents: [{ role: 'user', parts }] };
     headers = {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${GEMINI_API_KEY}`
+      "Authorization": `Bearer ${apiKey}`
     };
   }
 
@@ -433,14 +473,52 @@ async function callLlmWithPrompt(API_URL, actualModelName, apiConfig, systemInst
 
   const data = await response.json();
   let text = "";
+  let usage = null;
 
   if (useGptsChatApi) {
     text = data.choices?.[0]?.message?.content || "";
+    if (data.usage) {
+      usage = {
+        prompt_tokens: data.usage.prompt_tokens || 0,
+        completion_tokens: data.usage.completion_tokens || 0,
+        total_tokens: data.usage.total_tokens || ((data.usage.prompt_tokens || 0) + (data.usage.completion_tokens || 0))
+      };
+    }
   } else if (useGptsMessagesApi) {
     text = extractAnthropicText(data.content);
+    if (data.usage) {
+      usage = {
+        prompt_tokens: data.usage.input_tokens || 0,
+        completion_tokens: data.usage.output_tokens || 0,
+        total_tokens: (data.usage.input_tokens || 0) + (data.usage.output_tokens || 0)
+      };
+    }
   } else {
     text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    if (data.usageMetadata) {
+      usage = {
+        prompt_tokens: data.usageMetadata.promptTokenCount || 0,
+        completion_tokens: data.usageMetadata.candidatesTokenCount || 0,
+        total_tokens: data.usageMetadata.totalTokenCount || ((data.usageMetadata.promptTokenCount || 0) + (data.usageMetadata.candidatesTokenCount || 0))
+      };
+    }
   }
 
-  return text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim() || "（系统未返回回复内容）";
+  const cleanText = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim() || "（系统未返回回复内容）";
+  const normalizedUsage = usage || {
+    prompt_tokens: estimateTokensFromText(`${systemInstruction || ""}\n${promptText || ""}`),
+    completion_tokens: estimateTokensFromText(cleanText),
+    total_tokens: 0
+  };
+  normalizedUsage.total_tokens = normalizedUsage.total_tokens || (normalizedUsage.prompt_tokens + normalizedUsage.completion_tokens);
+
+  return {
+    text: cleanText,
+    usage: normalizedUsage,
+    apiMode,
+    model: modelName,
+    actualModelName,
+    apiUrl: API_URL,
+    estimated_cost_usd: estimateUsdCost(modelName, normalizedUsage)
+  };
 }

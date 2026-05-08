@@ -113,6 +113,21 @@ export function initDb() {
       FOREIGN KEY(project_id) REFERENCES projects(id)
     );
 
+    CREATE TABLE IF NOT EXISTS generation_logs (
+      id TEXT PRIMARY KEY,
+      user_id TEXT,
+      project_id TEXT,
+      feature TEXT NOT NULL,
+      provider TEXT,
+      mode TEXT,
+      request_id TEXT,
+      request_json TEXT,
+      response_json TEXT,
+      status TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(project_id) REFERENCES projects(id)
+    );
+
     -- Add new columns if they don't exist (using try-catch pattern in sqlite via altering is limited, so we do it safely if possible)
     -- In SQLite, we can just run ALTER TABLE, but it will throw if it exists. So we ignore errors or use pragma.
   `);

@@ -3,7 +3,6 @@ import { db } from "../db.js";
 
 const topics = new Map(); // topic_id -> {id, project_id, ...}
 const drafts = new Map(); // draft_id -> {id, topic_id, ...}
-const generationLogs = []; // append only
 
 export function createProject({ user_id, name, platform }) {
   const id = `p_${nanoid(8)}`;
@@ -55,11 +54,7 @@ export function deleteProject(project_id, user_id) {
     }
   }
 
-  for (let i = generationLogs.length - 1; i >= 0; i -= 1) {
-    if (generationLogs[i].project_id === project_id) {
-      generationLogs.splice(i, 1);
-    }
-  }
+  db.prepare("DELETE FROM generation_logs WHERE project_id = ?").run(project_id);
 
   return true;
 }
@@ -274,14 +269,58 @@ export function deleteTopicLibraryItem(id) {
 }
 
 export function addGenerationLog(log) {
-  generationLogs.push({ ...log, created_at: new Date().toISOString() });
+  const id = `glog_${nanoid(10)}`;
+  db.prepare(`
+    INSERT INTO generation_logs (
+      id, user_id, project_id, feature, provider, mode, request_id, request_json, response_json, status
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    log.user_id || null,
+    log.project_id || null,
+    log.feature,
+    log.provider || null,
+    log.mode || null,
+    log.request_id || null,
+    JSON.stringify(log.request_json ?? null),
+    JSON.stringify(log.response_json ?? null),
+    log.status || "ok"
+  );
+
+  return db.prepare("SELECT * FROM generation_logs WHERE id = ?").get(id) || null;
 }
 
-export function listGenerationLogs({ user_id, project_id, limit = 50 }) {
-  return generationLogs
-    .filter((l) => (user_id ? l.user_id === user_id : true) && (project_id ? l.project_id === project_id : true))
-    .slice(-limit)
-    .reverse();
+export function listGenerationLogs({ user_id, project_id, feature, limit = 50 }) {
+  const conditions = [];
+  const values = [];
+
+  if (user_id) {
+    conditions.push("user_id = ?");
+    values.push(user_id);
+  }
+  if (project_id) {
+    conditions.push("project_id = ?");
+    values.push(project_id);
+  }
+  if (feature) {
+    conditions.push("feature = ?");
+    values.push(feature);
+  }
+
+  const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const rows = db.prepare(`
+    SELECT *
+    FROM generation_logs
+    ${whereClause}
+    ORDER BY created_at DESC
+    LIMIT ?
+  `).all(...values, limit);
+
+  return rows.map((row) => ({
+    ...row,
+    request_json: row.request_json ? JSON.parse(row.request_json) : null,
+    response_json: row.response_json ? JSON.parse(row.response_json) : null
+  }));
 }
 
 
