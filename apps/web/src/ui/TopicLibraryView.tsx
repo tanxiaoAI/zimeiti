@@ -519,7 +519,7 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
       </Dialog>
 
       <Dialog open={analysisConfigOpen} onOpenChange={setAnalysisConfigOpen}>
-        <DialogContent className="sm:max-w-[720px]">
+        <DialogContent className="sm:max-w-[960px]">
           <DialogHeader>
             <DialogTitle>AI 分析提示词配置</DialogTitle>
             <DialogDescription>
@@ -527,7 +527,7 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
             </DialogDescription>
           </DialogHeader>
           <textarea
-            className="input-field min-h-[220px] resize-y p-4 text-sm leading-relaxed"
+            className="input-field min-h-[360px] max-h-[65vh] resize-y p-4 text-sm leading-relaxed"
             value={topicPromptDraft}
             onChange={(e) => setTopicPromptDraft(e.target.value)}
             placeholder="请输入 AI 分析默认提示词"
@@ -641,6 +641,7 @@ function TopicAiDrawer({ topic, onClose, onUpdate, onBatchUpdate, activeAccountI
   const [analyzing, setAnalyzing] = useState(false);
   const [promptDialogOpen, setPromptDialogOpen] = useState(false);
   const [results, setResults] = useState<{ model: string, result: string, error: string | null }[]>([]);
+  const normalizedRefContent = String(topic?.ref_content || "").trim() || "无";
 
   const parseStoredResult = (fallbackModel: string, value: string | null | undefined) => {
     if (!value) return null;
@@ -683,7 +684,7 @@ function TopicAiDrawer({ topic, onClose, onUpdate, onBatchUpdate, activeAccountI
       topic?.name || "未填写",
       "",
       "参考文案内容：",
-      topic?.ref_content || "未填写"
+      normalizedRefContent
     ].join("\n");
   };
 
@@ -701,18 +702,22 @@ function TopicAiDrawer({ topic, onClose, onUpdate, onBatchUpdate, activeAccountI
   if (!topic) return null;
 
   const handleAnalyze = async () => {
-    if (!topic.ref_content) {
-      alert("请先提取或填写参考文案内容");
-      return;
-    }
+    const nextRefContent = normalizedRefContent;
     setAnalyzing(true);
     setResults([]);
     try {
+      if (!String(topic.ref_content || "").trim()) {
+        if (typeof onBatchUpdate === "function") {
+          await onBatchUpdate(topic.id, { ref_content: nextRefContent });
+        } else {
+          await onUpdate(topic.id, "ref_content", nextRefContent);
+        }
+      }
       const data: any = await apiPost(`/api/v1/projects/${activeAccountId}/topic-library/analyze`, {
         systemInstruction,
         models,
         topicName: topic.name,
-        refContent: topic.ref_content
+        refContent: nextRefContent
       }, "demo-key");
       
       if (data?.results) {
