@@ -9,9 +9,7 @@ const GPTS_MODEL_ALIASES = {
   "gpts-gemini-3.1-pro-preview": "gemini-3.1-pro-preview"
 };
 
-const GPTS_MESSAGES_MODELS = new Set([
-  "claude-sonnet-4-6-thinking"
-]);
+const GPTS_MESSAGES_MODELS = new Set([]);
 
 function isNativeGeminiModel(modelName) {
   return modelName === "gemini-3.1-flash-lite-preview" || modelName === "gemini-3.1-pro-preview";
@@ -303,7 +301,7 @@ export async function analyzeVideoWithGemini(systemInstruction, teardown, target
   return await callLlmWithPrompt(API_URL, actualModelName, { useGptsChatApi, useGptsMessagesApi }, systemInstruction, promptText, teardown.cover_image);
 }
 
-export async function analyzeTopicLibraryContent(systemInstruction, topicContent, targetModel) {
+export async function analyzeTopicLibraryContent(systemInstruction, topicData, targetModel) {
   const { actualModelName, useGptsChatApi, useGptsMessagesApi } = resolveModelConfig(targetModel);
 
   const API_URL = useGptsChatApi
@@ -312,7 +310,18 @@ export async function analyzeTopicLibraryContent(systemInstruction, topicContent
       ? `${GPTS_API_BASE_URL}/v1/messages`
       : `https://api.ricoxueai.cn/v1beta/models/${actualModelName}:generateContent`;
 
-  const promptText = `请分析以下内容：\n${topicContent}`;
+  const promptText = [
+    "请基于以下信息进行内容拆解分析：",
+    "",
+    "分析提示词：",
+    systemInstruction || "未填写",
+    "",
+    "选题名称：",
+    topicData?.topicName || "未填写",
+    "",
+    "参考文案内容：",
+    topicData?.refContent || "未填写"
+  ].join("\n");
 
   return await callLlmWithPrompt(API_URL, actualModelName, { useGptsChatApi, useGptsMessagesApi }, systemInstruction, promptText);
 }
@@ -322,16 +331,12 @@ async function callLlmWithPrompt(API_URL, actualModelName, apiConfig, systemInst
   let payload, headers;
 
   if (useGptsChatApi) {
-    const userContent = [
-      { type: "text", text: promptText }
-    ];
-
-    if (cover_image) {
-      userContent.push({
-        type: "image_url",
-        image_url: { url: cover_image }
-      });
-    }
+    const userContent = cover_image
+      ? [
+          { type: "text", text: promptText },
+          { type: "image_url", image_url: { url: cover_image } }
+        ]
+      : promptText;
 
     payload = {
       model: actualModelName,

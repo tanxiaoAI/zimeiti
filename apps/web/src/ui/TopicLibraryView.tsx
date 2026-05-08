@@ -42,6 +42,10 @@ function EditableInput({ value, onChange, placeholder, style, className }: any) 
 
 function CompactTagSelect({ value, options, placeholder, onChange }: any) {
   const current = options.find((item: any) => item.value === value);
+  const shorten = (text: string) => {
+    if (!text) return text;
+    return text.length > 4 ? `${text.slice(0, 4)}...` : text;
+  };
 
   return (
     <Select value={value || ""} onValueChange={onChange}>
@@ -54,8 +58,9 @@ function CompactTagSelect({ value, options, placeholder, onChange }: any) {
               color: current.color || "#475569",
               borderColor: `${current.color || "#CBD5E1"}55`
             }}
+            title={current.value}
           >
-            {current.value}
+            {shorten(current.value)}
           </span>
         ) : (
           <span className="topic-library-tag topic-library-tag-empty">{placeholder}</span>
@@ -71,8 +76,9 @@ function CompactTagSelect({ value, options, placeholder, onChange }: any) {
                 color: item.color || "#475569",
                 borderColor: `${item.color || "#CBD5E1"}55`
               }}
+              title={item.value}
             >
-              {item.value}
+              {shorten(item.value)}
             </span>
           </SelectItem>
         ))}
@@ -165,6 +171,13 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
     }
   };
 
+  const applyUpdatedTopic = (updated: any) => {
+    if (!updated?.id) return;
+    setTopics(prev => prev.map(item => item.id === updated.id ? updated : item));
+    setCopyDrawer(prev => (prev && prev.id === updated.id) ? updated : prev);
+    setAiDrawer(prev => (prev && prev.id === updated.id) ? updated : prev);
+  };
+
   const fetchOptions = async (field: string) => {
     if (!activeAccountId) return;
     try {
@@ -208,11 +221,20 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
       }
       
       const updated: any = await apiPut(`/api/v1/projects/${activeAccountId}/topic-library/${id}`, payload, "demo-key");
-      fetchTopics();
-      setCopyDrawer(prev => (prev && prev.id === id) ? updated : prev);
-      setAiDrawer(prev => (prev && prev.id === id) ? updated : prev);
+      applyUpdatedTopic(updated);
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const handleBatchUpdateRecord = async (id: string, payload: Record<string, any>) => {
+    try {
+      const updated: any = await apiPut(`/api/v1/projects/${activeAccountId}/topic-library/${id}`, payload, "demo-key");
+      applyUpdatedTopic(updated);
+      return updated;
+    } catch (e) {
+      console.error(e);
+      throw e;
     }
   };
 
@@ -279,25 +301,25 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
           <TableHeader>
             <TableRow>
               <TableHead className="sticky-col-left" style={{ width: 180 }}>选题名称</TableHead>
-              <TableHead style={{ width: 110 }}>
-                <div style={{ display: 'flex', alignItems: 'center' }}>
+              <TableHead style={{ width: 92 }}>
+                <div className="topic-library-head-inline">
                   人工判断结果
-                  <Button variant="ghost" size="icon" className="w-6 h-6 ml-1" onClick={() => setOptionModal('judgment_result')}><Settings size={14} /></Button>
+                  <Button variant="ghost" size="icon" className="topic-library-head-settings" onClick={() => setOptionModal('judgment_result')}><Settings size={13} /></Button>
                 </div>
               </TableHead>
-              <TableHead style={{ width: 150 }}>人工判断原因</TableHead>
-              <TableHead style={{ width: 96 }}>
-                <div style={{ display: 'flex', alignItems: 'center' }}>
+              <TableHead style={{ width: 132 }}>人工判断原因</TableHead>
+              <TableHead style={{ width: 82 }}>
+                <div className="topic-library-head-inline">
                   来源
-                  <Button variant="ghost" size="icon" className="w-6 h-6 ml-1" onClick={() => setOptionModal('source')}><Settings size={14} /></Button>
+                  <Button variant="ghost" size="icon" className="topic-library-head-settings" onClick={() => setOptionModal('source')}><Settings size={13} /></Button>
                 </div>
               </TableHead>
-              <TableHead style={{ width: 124 }}>录入时间</TableHead>
-              <TableHead style={{ width: 180 }}>参考链接</TableHead>
-              <TableHead style={{ width: 88 }}>链接平台</TableHead>
-              <TableHead style={{ width: 94 }}>参考文案</TableHead>
-              <TableHead style={{ width: 94 }}>AI分析</TableHead>
-              <TableHead className="sticky-col-right" style={{ width: 58, textAlign: 'center' }}>操作</TableHead>
+              <TableHead style={{ width: 112 }}>录入时间</TableHead>
+              <TableHead style={{ width: 156 }}>参考链接</TableHead>
+              <TableHead style={{ width: 72 }}>匹配平台</TableHead>
+              <TableHead style={{ width: 72 }}>参考文案</TableHead>
+              <TableHead style={{ width: 72 }}>AI分析</TableHead>
+              <TableHead className="sticky-col-right" style={{ width: 48, textAlign: 'center' }}>操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -335,7 +357,7 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
                     onChange={(val: string) => handleUpdateRecord(topic.id, 'source', val)}
                   />
                 </TableCell>
-                <TableCell className="text-muted-foreground text-xs">
+                <TableCell className="topic-library-meta-cell">
                   {formatDate(topic.created_at)}
                 </TableCell>
                 <TableCell>
@@ -349,7 +371,7 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
                     isLink
                   />
                 </TableCell>
-                <TableCell className="text-muted-foreground text-xs">
+                <TableCell className="topic-library-meta-cell">
                   {topic.ref_platform || "无匹配类别"}
                 </TableCell>
                 <TableCell>
@@ -363,7 +385,7 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
                   </Button>
                 </TableCell>
                 <TableCell className="sticky-col-right text-center">
-                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handleDeleteRecord(topic.id)}>
+                  <Button variant="ghost" size="icon" className="topic-library-delete-btn" onClick={() => handleDeleteRecord(topic.id)}>
                     <Trash2 size={14} className="text-muted-foreground" />
                   </Button>
                 </TableCell>
@@ -441,6 +463,7 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
         topic={aiDrawer} 
         onClose={() => setAiDrawer(null)} 
         onUpdate={handleUpdateRecord}
+        onBatchUpdate={handleBatchUpdateRecord}
         activeAccountId={activeAccountId}
       />
     </div>
@@ -519,24 +542,60 @@ function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
   );
 }
 
-function TopicAiDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
+function TopicAiDrawer({ topic, onClose, onUpdate, onBatchUpdate, activeAccountId }: any) {
   const [analyzing, setAnalyzing] = useState(false);
   const [systemInstruction, setSystemInstruction] = useState("你是一个资深自媒体内容分析师，请对提供的文案进行深度拆解分析。");
   const [models, setModels] = useState(["gpt-5.5", "claude-opus-4-6", "gpts-gemini-3.1-pro-preview"]);
-  
+  const [promptDialogOpen, setPromptDialogOpen] = useState(false);
   const [results, setResults] = useState<{ model: string, result: string, error: string | null }[]>([]);
 
-  const parseStoredResult = (model: string, value: string | null | undefined) => {
+  const parseStoredResult = (fallbackModel: string, value: string | null | undefined) => {
     if (!value) return null;
     const text = String(value);
-    if (/^API Error:/i.test(text) || /balance is insufficient/i.test(text) || /^Error:/i.test(text)) {
-      return { model, result: "", error: text };
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed === "object" && ("result" in parsed || "error" in parsed)) {
+        return {
+          model: parsed.model || fallbackModel,
+          result: String(parsed.result || ""),
+          error: parsed.error ? String(parsed.error) : null
+        };
+      }
+    } catch (e) {
+      // keep backward compatibility with plain text storage
     }
-    return { model, result: text, error: null };
+    if (/^API Error:/i.test(text) || /balance is insufficient/i.test(text) || /^Error:/i.test(text)) {
+      return { model: fallbackModel, result: "", error: text };
+    }
+    return { model: fallbackModel, result: text, error: null };
+  };
+
+  const stringifyStoredResult = (entry: { model: string, result: string | null, error: string | null } | undefined) => {
+    if (!entry) return "";
+    return JSON.stringify({
+      model: entry.model,
+      result: entry.result || "",
+      error: entry.error || null
+    });
+  };
+
+  const buildPromptPreview = () => {
+    return [
+      "请基于以下信息进行内容拆解分析：",
+      "",
+      "分析提示词：",
+      systemInstruction || "未填写",
+      "",
+      "选题名称：",
+      topic?.name || "未填写",
+      "",
+      "参考文案内容：",
+      topic?.ref_content || "未填写"
+    ].join("\n");
   };
 
   useEffect(() => {
-    if (topic) {
+    if (topic?.id) {
       const res = [
         parseStoredResult(models[0], topic.ai_analysis_1),
         parseStoredResult(models[1], topic.ai_analysis_2),
@@ -544,7 +603,7 @@ function TopicAiDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
       ].filter(Boolean) as { model: string, result: string, error: string | null }[];
       setResults(res);
     }
-  }, [topic, models]);
+  }, [topic?.id]);
 
   if (!topic) return null;
 
@@ -559,14 +618,23 @@ function TopicAiDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
       const data: any = await apiPost(`/api/v1/projects/${activeAccountId}/topic-library/analyze`, {
         systemInstruction,
         models,
-        content: topic.ref_content
+        topicName: topic.name,
+        refContent: topic.ref_content
       }, "demo-key");
       
       if (data?.results) {
         setResults(data.results);
-        onUpdate(topic.id, 'ai_analysis_1', data.results[0]?.result || "");
-        onUpdate(topic.id, 'ai_analysis_2', data.results[1]?.result || "");
-        onUpdate(topic.id, 'ai_analysis_3', data.results[2]?.result || "");
+        if (typeof onBatchUpdate === "function") {
+          await onBatchUpdate(topic.id, {
+            ai_analysis_1: stringifyStoredResult(data.results[0]),
+            ai_analysis_2: stringifyStoredResult(data.results[1]),
+            ai_analysis_3: stringifyStoredResult(data.results[2])
+          });
+        } else {
+          await onUpdate(topic.id, 'ai_analysis_1', stringifyStoredResult(data.results[0]));
+          await onUpdate(topic.id, 'ai_analysis_2', stringifyStoredResult(data.results[1]));
+          await onUpdate(topic.id, 'ai_analysis_3', stringifyStoredResult(data.results[2]));
+        }
       } else {
         alert("分析失败");
       }
@@ -592,7 +660,12 @@ function TopicAiDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
         <div className="flex flex-col gap-6">
           <div className="p-4 bg-muted/30 rounded-lg flex flex-col gap-4">
             <div>
-              <label className="text-sm font-semibold mb-2 block">System Instruction (人设与指令)</label>
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <label className="text-sm font-semibold block">System Instruction (人设与指令)</label>
+                <Button type="button" variant="outline" size="sm" onClick={() => setPromptDialogOpen(true)}>
+                  查看全部提示词
+                </Button>
+              </div>
               <textarea 
                 className="input-field min-h-[80px] resize-y p-3 text-sm" 
                 value={systemInstruction}
@@ -662,6 +735,20 @@ function TopicAiDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
           </div>
         </div>
       </SheetContent>
+
+      <Dialog open={promptDialogOpen} onOpenChange={setPromptDialogOpen}>
+        <DialogContent className="sm:max-w-[860px]">
+          <DialogHeader>
+            <DialogTitle>完整分析提示词</DialogTitle>
+            <DialogDescription>
+              这里展示的是当前将要发送给模型的核心分析内容。
+            </DialogDescription>
+          </DialogHeader>
+          <ScrollArea className="max-h-[70vh] rounded-md border border-border bg-muted/20 p-4">
+            <pre className="whitespace-pre-wrap break-words text-sm leading-6">{buildPromptPreview()}</pre>
+          </ScrollArea>
+        </DialogContent>
+      </Dialog>
     </Sheet>
   );
 }

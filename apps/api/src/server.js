@@ -1037,15 +1037,19 @@ app.post("/api/v1/projects/:projectId/topic-library/extract", authApiKey, async 
 
 app.post("/api/v1/projects/:projectId/topic-library/analyze", authApiKey, async (req, res) => {
   const request_id = req.context?.requestId;
-  const { systemInstruction, models, content } = req.body;
+  const { systemInstruction, models, topicName, refContent } = req.body;
   
-  if (!content) return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "缺少文案内容" }, request_id));
+  if (!refContent) return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "缺少文案内容" }, request_id));
   if (!models || models.length === 0) return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "至少需要选择一个模型" }, request_id));
   
   try {
     const promises = models.map(async (model) => {
       try {
-        const result = await analyzeTopicLibraryContent(systemInstruction || "你是一个资深自媒体内容分析师。", content, model);
+        const result = await analyzeTopicLibraryContent(
+          systemInstruction || "你是一个资深自媒体内容分析师。",
+          { topicName, refContent },
+          model
+        );
         return { model, result, error: null };
       } catch (e) {
         return { model, result: null, error: e.message };
