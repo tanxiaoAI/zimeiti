@@ -313,6 +313,7 @@ async function mirrorRemoteMediaToPublicUrl(remoteUrl, req, prefix = "topic_medi
 
 async function submitVolcAsrTask(mediaUrl) {
   const requestId = randomUUID();
+  const format = guessAsrFormatFromUrl(mediaUrl);
   const response = await fetch("https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit", {
     method: "POST",
     headers: {
@@ -326,11 +327,7 @@ async function submitVolcAsrTask(mediaUrl) {
       user: { uid: "ai-media-topic-library" },
       audio: {
         url: mediaUrl,
-        format: guessAsrFormatFromUrl(mediaUrl),
-        codec: "raw",
-        rate: 16000,
-        bits: 16,
-        channel: 1
+        format
       },
       request: {
         model_name: "bigmodel",
@@ -374,6 +371,11 @@ async function queryVolcAsrTask(requestId) {
   return { statusCode, statusMessage, data };
 }
 
+function isVolcUriError(message) {
+  const text = String(message || "");
+  return /Invalid audio URI|audio download failed/i.test(text);
+}
+
 async function transcribeMediaByVolc(mediaUrl) {
   const requestId = await submitVolcAsrTask(mediaUrl);
 
@@ -397,6 +399,23 @@ async function transcribeMediaByVolc(mediaUrl) {
   }
 
   throw new Error("火山语音识别超时，请稍后重试");
+}
+
+async function transcribeMediaWithFallback(mediaUrls) {
+  const errors = [];
+
+  for (const mediaUrl of mediaUrls.filter(Boolean)) {
+    try {
+      return await transcribeMediaByVolc(mediaUrl);
+    } catch (error) {
+      errors.push(`${mediaUrl} -> ${error.message}`);
+      if (!isVolcUriError(error.message)) {
+        throw error;
+      }
+    }
+  }
+
+  throw new Error(errors[errors.length - 1] || "未找到可用的语音识别地址");
 }
 
 async function handleProjectChat(req, res, chatType, options = {}) {
@@ -1069,8 +1088,13 @@ app.post("/api/v1/projects/:projectId/topic-library/extract", authApiKey, async 
   
   try {
     const parsed = await resolveVideoUrlByPlatform(link, platform);
-    const mirroredMediaUrl = await mirrorRemoteMediaToPublicUrl(parsed.videoUrl, req, "topic_extract");
-    const transcript = await transcribeMediaByVolc(mirroredMediaUrl);
+    let mirroredMediaUrl = null;
+    try {
+      mirroredMediaUrl = await mirrorRemoteMediaToPublicUrl(parsed.videoUrl, req, "topic_extract");
+    } catch (mirrorError) {
+      console.warn("topic-library extract mirror failed:", mirrorError.message);
+    }
+    const transcript = await transcribeMediaWithFallback([parsed.videoUrl, mirroredMediaUrl]);
 
     res.json(ok({
       content: transcript,

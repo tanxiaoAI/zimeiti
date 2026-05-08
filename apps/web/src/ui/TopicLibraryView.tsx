@@ -713,12 +713,26 @@ function TopicAiDrawer({ topic, onClose, onUpdate, onBatchUpdate, activeAccountI
           await onUpdate(topic.id, "ref_content", nextRefContent);
         }
       }
-      const data: any = await apiPost(`/api/v1/projects/${activeAccountId}/topic-library/analyze`, {
-        systemInstruction,
-        models,
-        topicName: topic.name,
-        refContent: nextRefContent
-      }, "demo-key");
+      let data: any;
+      try {
+        data = await apiPost(`/api/v1/projects/${activeAccountId}/topic-library/analyze`, {
+          systemInstruction,
+          models,
+          topicName: topic.name,
+          refContent: nextRefContent
+        }, "demo-key");
+      } catch (error: any) {
+        const message = String(error?.message || "");
+        if (!/缺少文案内容/.test(message)) {
+          throw error;
+        }
+        data = await apiPost(`/api/v1/projects/${activeAccountId}/topic-library/analyze`, {
+          systemInstruction,
+          models,
+          topicName: topic.name,
+          refContent: "无"
+        }, "demo-key");
+      }
       
       if (data?.results) {
         setResults(data.results);
