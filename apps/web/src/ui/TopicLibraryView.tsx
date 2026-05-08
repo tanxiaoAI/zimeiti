@@ -19,6 +19,23 @@ const MODEL_OPTIONS = [
   "gpts-gemini-3.1-pro-preview"
 ];
 
+const TOPIC_LIBRARY_PROMPT_FALLBACK = "你是一个资深自媒体内容分析师，请对提供的文案进行深度拆解分析。";
+const TOPIC_LIBRARY_DEFAULT_MODELS = ["gpt-5.5", "claude-opus-4-6", "gpts-gemini-3.1-pro-preview"];
+
+function getTopicLibraryConfigKey(accountId: string, field: string) {
+  return `topic_library:${accountId}:${field}`;
+}
+
+function readTopicLibraryConfig(accountId: string, field: string) {
+  if (!accountId) return "";
+  return localStorage.getItem(getTopicLibraryConfigKey(accountId, field)) || "";
+}
+
+function writeTopicLibraryConfig(accountId: string, field: string, value: string) {
+  if (!accountId) return;
+  localStorage.setItem(getTopicLibraryConfigKey(accountId, field), value);
+}
+
 function EditableInput({ value, onChange, placeholder, style, className }: any) {
   const [localValue, setLocalValue] = useState(value || "");
   
@@ -159,7 +176,11 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
   const [optionModal, setOptionModal] = useState<string | null>(null);
   const [copyDrawer, setCopyDrawer] = useState<any | null>(null);
   const [aiDrawer, setAiDrawer] = useState<any | null>(null);
+  const [analysisConfigOpen, setAnalysisConfigOpen] = useState(false);
   const [newOption, setNewOption] = useState({ value: "", color: "#3B82F6" });
+  const [topicPromptDraft, setTopicPromptDraft] = useState(TOPIC_LIBRARY_PROMPT_FALLBACK);
+  const [topicPrompt, setTopicPrompt] = useState(TOPIC_LIBRARY_PROMPT_FALLBACK);
+  const [topicModels, setTopicModels] = useState<string[]>(TOPIC_LIBRARY_DEFAULT_MODELS);
 
   const fetchTopics = async () => {
     if (!activeAccountId) return;
@@ -192,6 +213,26 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
     fetchTopics();
     fetchOptions('judgment_result');
     fetchOptions('source');
+  }, [activeAccountId]);
+
+  useEffect(() => {
+    if (!activeAccountId) return;
+    const savedPrompt = readTopicLibraryConfig(activeAccountId, "prompt") || TOPIC_LIBRARY_PROMPT_FALLBACK;
+    const savedModelsRaw = readTopicLibraryConfig(activeAccountId, "models");
+    let savedModels = TOPIC_LIBRARY_DEFAULT_MODELS;
+    if (savedModelsRaw) {
+      try {
+        const parsed = JSON.parse(savedModelsRaw);
+        if (Array.isArray(parsed) && parsed.length === 3) {
+          savedModels = parsed;
+        }
+      } catch (e) {
+        // ignore invalid persisted config
+      }
+    }
+    setTopicPrompt(savedPrompt);
+    setTopicPromptDraft(savedPrompt);
+    setTopicModels(savedModels);
   }, [activeAccountId]);
 
   const identifyPlatform = (url: string) => {
@@ -277,6 +318,18 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
     }
   };
 
+  const saveTopicAnalysisPrompt = () => {
+    const next = topicPromptDraft.trim() || TOPIC_LIBRARY_PROMPT_FALLBACK;
+    setTopicPrompt(next);
+    writeTopicLibraryConfig(activeAccountId, "prompt", next);
+    setAnalysisConfigOpen(false);
+  };
+
+  const persistTopicModels = (nextModels: string[]) => {
+    setTopicModels(nextModels);
+    writeTopicLibraryConfig(activeAccountId, "models", JSON.stringify(nextModels));
+  };
+
   const formatDate = (isoStr: string) => {
     if (!isoStr) return "";
     const str = isoStr.endsWith('Z') ? isoStr : isoStr.replace(' ', 'T') + 'Z';
@@ -318,7 +371,12 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
               <TableHead style={{ width: 156 }}>参考链接</TableHead>
               <TableHead style={{ width: 72 }}>匹配平台</TableHead>
               <TableHead style={{ width: 72 }}>参考文案</TableHead>
-              <TableHead style={{ width: 72 }}>AI分析</TableHead>
+              <TableHead style={{ width: 88 }}>
+                <div className="topic-library-head-inline">
+                  AI分析
+                  <Button variant="ghost" size="icon" className="topic-library-head-settings" onClick={() => setAnalysisConfigOpen(true)}><Settings size={13} /></Button>
+                </div>
+              </TableHead>
               <TableHead className="sticky-col-right" style={{ width: 48, textAlign: 'center' }}>操作</TableHead>
             </TableRow>
           </TableHeader>
@@ -375,12 +433,22 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
                   {topic.ref_platform || "无匹配类别"}
                 </TableCell>
                 <TableCell>
-                  <Button variant="ghost" size="sm" className="topic-library-action" onClick={() => setCopyDrawer(topic)}>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className={`topic-library-action ${topic.ref_content ? "topic-library-action-view-copy" : "topic-library-action-extract"}`}
+                    onClick={() => setCopyDrawer(topic)}
+                  >
                     {topic.ref_content ? "查看/修改" : "点击提取"}
                   </Button>
                 </TableCell>
                 <TableCell>
-                  <Button variant="ghost" size="sm" className="topic-library-action" onClick={() => setAiDrawer(topic)}>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className={`topic-library-action ${topic.ai_analysis_1 || topic.ai_analysis_2 || topic.ai_analysis_3 ? "topic-library-action-view-analysis" : "topic-library-action-start-analysis"}`}
+                    onClick={() => setAiDrawer(topic)}
+                  >
                     {topic.ai_analysis_1 || topic.ai_analysis_2 || topic.ai_analysis_3 ? "查看分析" : "开始分析"}
                   </Button>
                 </TableCell>
@@ -450,6 +518,30 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
         </DialogContent>
       </Dialog>
 
+      <Dialog open={analysisConfigOpen} onOpenChange={setAnalysisConfigOpen}>
+        <DialogContent className="sm:max-w-[720px]">
+          <DialogHeader>
+            <DialogTitle>AI 分析提示词配置</DialogTitle>
+            <DialogDescription>
+              保存后会长期作为选题库 AI 分析默认提示词使用，除非你再次手动修改。
+            </DialogDescription>
+          </DialogHeader>
+          <textarea
+            className="input-field min-h-[220px] resize-y p-4 text-sm leading-relaxed"
+            value={topicPromptDraft}
+            onChange={(e) => setTopicPromptDraft(e.target.value)}
+            placeholder="请输入 AI 分析默认提示词"
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => {
+              setTopicPromptDraft(topicPrompt);
+              setAnalysisConfigOpen(false);
+            }}>取消</Button>
+            <Button className="topic-primary-btn" onClick={saveTopicAnalysisPrompt}>保存配置</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Copy Content Drawer */}
       <TopicCopyDrawer 
         topic={copyDrawer} 
@@ -465,6 +557,9 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
         onUpdate={handleUpdateRecord}
         onBatchUpdate={handleBatchUpdateRecord}
         activeAccountId={activeAccountId}
+        systemInstruction={topicPrompt}
+        models={topicModels}
+        onModelsChange={persistTopicModels}
       />
     </div>
   );
@@ -542,10 +637,8 @@ function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
   );
 }
 
-function TopicAiDrawer({ topic, onClose, onUpdate, onBatchUpdate, activeAccountId }: any) {
+function TopicAiDrawer({ topic, onClose, onUpdate, onBatchUpdate, activeAccountId, systemInstruction, models, onModelsChange }: any) {
   const [analyzing, setAnalyzing] = useState(false);
-  const [systemInstruction, setSystemInstruction] = useState("你是一个资深自媒体内容分析师，请对提供的文案进行深度拆解分析。");
-  const [models, setModels] = useState(["gpt-5.5", "claude-opus-4-6", "gpts-gemini-3.1-pro-preview"]);
   const [promptDialogOpen, setPromptDialogOpen] = useState(false);
   const [results, setResults] = useState<{ model: string, result: string, error: string | null }[]>([]);
 
@@ -661,20 +754,11 @@ function TopicAiDrawer({ topic, onClose, onUpdate, onBatchUpdate, activeAccountI
           <div className="p-4 bg-muted/30 rounded-lg flex flex-col gap-4">
             <div>
               <div className="mb-2 flex items-center justify-between gap-3">
-                <label className="text-sm font-semibold block">System Instruction (人设与指令)</label>
+                <label className="text-sm font-semibold block">对比模型矩阵</label>
                 <Button type="button" variant="outline" size="sm" onClick={() => setPromptDialogOpen(true)}>
                   查看全部提示词
                 </Button>
               </div>
-              <textarea 
-                className="input-field min-h-[80px] resize-y p-3 text-sm" 
-                value={systemInstruction}
-                onChange={e => setSystemInstruction(e.target.value)}
-              />
-            </div>
-            
-            <div>
-              <label className="text-sm font-semibold mb-2 block">对比模型矩阵</label>
               <div className="flex gap-2">
                 {models.map((m, i) => (
                   <Select
@@ -683,7 +767,7 @@ function TopicAiDrawer({ topic, onClose, onUpdate, onBatchUpdate, activeAccountI
                     onValueChange={(val) => {
                       const newM = [...models];
                       newM[i] = val;
-                      setModels(newM);
+                      onModelsChange(newM);
                     }}
                   >
                     <SelectTrigger className="flex-1">

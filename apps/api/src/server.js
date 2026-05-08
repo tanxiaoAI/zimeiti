@@ -199,9 +199,9 @@ function pickDouyinVideoUrl(getOneData) {
     getOneData;
 
   const preferredUrls = [
+    ...(aweme?.video?.download_addr?.url_list || []),
     ...(aweme?.video?.play_addr?.url_list || []),
     ...(aweme?.video?.play_addr_h264?.url_list || []),
-    ...(aweme?.video?.download_addr?.url_list || []),
     ...((aweme?.video?.bit_rate || []).flatMap(item => item?.play_addr?.url_list || []))
   ].filter(Boolean);
 
@@ -242,7 +242,9 @@ async function resolveVideoUrlByPlatform(link, platform) {
   }
 
   if (platform === "抖音") {
-    const getOneData = await callGetOneApi("/api/douyin/fetch_video_detail", { share_text: link, aweme_id: "" });
+    const awemeIdMatch = link.match(/(?:modal_id|item_id|video)=(\d+)|douyin\.com\/video\/(\d+)/i) || link.match(/modal_id=(\d+)/i) || link.match(/item_id=(\d+)/i) || link.match(/douyin\.com\/video\/(\d+)/i);
+    const awemeId = awemeIdMatch?.[1] || awemeIdMatch?.[2] || "";
+    const getOneData = await callGetOneApi("/api/douyin/fetch_video_detail", { share_text: link, aweme_id: awemeId });
     return {
       ...pickDouyinVideoUrl(getOneData),
       parser: "getoneapi:douyin/fetch_video_detail"
@@ -253,10 +255,13 @@ async function resolveVideoUrlByPlatform(link, platform) {
 }
 
 function guessAsrFormatFromUrl(mediaUrl) {
-  const cleanUrl = String(mediaUrl || "").split("?")[0].toLowerCase();
+  const rawUrl = String(mediaUrl || "");
+  const cleanUrl = rawUrl.split("?")[0].toLowerCase();
   if (cleanUrl.endsWith(".wav")) return "wav";
   if (cleanUrl.endsWith(".ogg")) return "ogg";
   if (cleanUrl.endsWith(".mp3")) return "mp3";
+  if (cleanUrl.endsWith(".mp4") || /mime_type=video_mp4/i.test(rawUrl) || /\/video\//i.test(rawUrl) || /douyinvod\.com/i.test(rawUrl)) return "mp4";
+  if (/mime_type=audio_mp3/i.test(rawUrl)) return "mp3";
   return "mp3";
 }
 

@@ -953,6 +953,50 @@ input.topic-library-input-expanded {
   font-size: 0.78rem;
 }
 
+.topic-library-action-extract {
+  color: #2563eb;
+  background: rgba(37, 99, 235, 0.08);
+  border: 1px solid rgba(37, 99, 235, 0.18);
+}
+
+.topic-library-action-extract:hover {
+  color: #1d4ed8;
+  background: rgba(37, 99, 235, 0.14);
+}
+
+.topic-library-action-view-copy {
+  color: #059669;
+  background: rgba(5, 150, 105, 0.08);
+  border: 1px solid rgba(5, 150, 105, 0.18);
+}
+
+.topic-library-action-view-copy:hover {
+  color: #047857;
+  background: rgba(5, 150, 105, 0.14);
+}
+
+.topic-library-action-start-analysis {
+  color: #d97706;
+  background: rgba(217, 119, 6, 0.1);
+  border: 1px solid rgba(217, 119, 6, 0.18);
+}
+
+.topic-library-action-start-analysis:hover {
+  color: #b45309;
+  background: rgba(217, 119, 6, 0.16);
+}
+
+.topic-library-action-view-analysis {
+  color: #7c3aed;
+  background: rgba(124, 58, 237, 0.1);
+  border: 1px solid rgba(124, 58, 237, 0.18);
+}
+
+.topic-library-action-view-analysis:hover {
+  color: #6d28d9;
+  background: rgba(124, 58, 237, 0.16);
+}
+
 .topic-library-add-btn {
   min-width: 92px;
   display: inline-flex;
@@ -1030,6 +1074,14 @@ input.topic-library-input-expanded {
 .topic-copy-extract-btn {
   min-width: 104px;
   flex-shrink: 0;
+  background: rgba(37, 99, 235, 0.1) !important;
+  color: #2563eb !important;
+  border: 1px solid rgba(37, 99, 235, 0.18) !important;
+}
+
+.topic-copy-extract-btn:hover {
+  background: rgba(37, 99, 235, 0.16) !important;
+  color: #1d4ed8 !important;
 }
 
 .topic-copy-textarea {
