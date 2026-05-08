@@ -111,8 +111,8 @@ app.get("/health", (req, res) => {
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500 * 1024 * 1024 } });
 
 const GETONE_API_BASE_URL = (process.env.GETONE_API_BASE_URL || "https://api.getoneapi.com").replace(/\/$/, "");
-const GETONE_API_KEY = process.env.GETONE_API_KEY || "nDk3BzSLRneqvZeO3GXv88lvXNntVtYvZDm8nYrTj2a55d5hILLuh94f4RQvwWYM";
-const VOLC_ASR_API_KEY = process.env.VOLC_ASR_API_KEY || "e2843f9f-c542-4e5c-8213-d4a48371dd65";
+const GETONE_API_KEY = process.env.GETONE_API_KEY;
+const VOLC_ASR_API_KEY = process.env.VOLC_ASR_API_KEY;
 const VOLC_ASR_RESOURCE_ID = process.env.VOLC_ASR_RESOURCE_ID || "volc.seedasr.auc";
 
 function extractXiaohongshuNoteId(link) {
@@ -130,10 +130,11 @@ function extractXiaohongshuNoteId(link) {
 }
 
 async function callGetOneApi(endpoint, body) {
+  const apiKey = GETONE_API_KEY || getRequiredEnv("GETONE_API_KEY");
   const response = await fetch(`${GETONE_API_BASE_URL}${endpoint}`, {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${GETONE_API_KEY}`,
+      "Authorization": `Bearer ${apiKey}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify(body)
@@ -326,13 +327,14 @@ async function mirrorRemoteMediaToPublicUrl(remoteUrl, req, prefix = "topic_medi
 }
 
 async function submitVolcAsrTask(mediaUrl) {
+  const volcAsrApiKey = VOLC_ASR_API_KEY || getRequiredEnv("VOLC_ASR_API_KEY");
   const requestId = randomUUID();
   const format = guessAsrFormatFromUrl(mediaUrl);
   const response = await fetch("https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Api-Key": VOLC_ASR_API_KEY,
+      "X-Api-Key": volcAsrApiKey,
       "X-Api-Resource-Id": VOLC_ASR_RESOURCE_ID,
       "X-Api-Request-Id": requestId,
       "X-Api-Sequence": "-1"
@@ -367,11 +369,12 @@ async function submitVolcAsrTask(mediaUrl) {
 }
 
 async function queryVolcAsrTask(requestId) {
+  const volcAsrApiKey = VOLC_ASR_API_KEY || getRequiredEnv("VOLC_ASR_API_KEY");
   const response = await fetch("https://openspeech.bytedance.com/api/v3/auc/bigmodel/query", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Api-Key": VOLC_ASR_API_KEY,
+      "X-Api-Key": volcAsrApiKey,
       "X-Api-Resource-Id": VOLC_ASR_RESOURCE_ID,
       "X-Api-Request-Id": requestId
     },
