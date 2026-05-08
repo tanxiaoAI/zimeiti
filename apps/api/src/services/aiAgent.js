@@ -9,6 +9,10 @@ const GPTS_MODEL_ALIASES = {
   "gpts-gemini-3.1-pro-preview": "gemini-3.1-pro-preview"
 };
 
+const GPTS_MESSAGES_MODELS = new Set([
+  "claude-sonnet-4-6-thinking"
+]);
+
 function isNativeGeminiModel(modelName) {
   return modelName === "gemini-3.1-flash-lite-preview" || modelName === "gemini-3.1-pro-preview";
 }
@@ -16,13 +20,26 @@ function isNativeGeminiModel(modelName) {
 function resolveModelConfig(targetModel) {
   const modelName = targetModel || DEFAULT_MODEL;
   const actualModelName = GPTS_MODEL_ALIASES[modelName] || modelName;
-  const useGptsChatApi = !isNativeGeminiModel(modelName);
+  const apiMode = isNativeGeminiModel(modelName)
+    ? "native-gemini"
+    : (GPTS_MESSAGES_MODELS.has(modelName) ? "gpts-messages" : "gpts-chat");
 
   return {
     modelName,
     actualModelName,
-    useGptsChatApi
+    apiMode,
+    useGptsChatApi: apiMode === "gpts-chat",
+    useGptsMessagesApi: apiMode === "gpts-messages"
   };
+}
+
+function extractAnthropicText(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((item) => item?.type === "text" && typeof item.text === "string")
+    .map((item) => item.text)
+    .join("\n");
 }
 
 function estimateTokensFromText(text) {
@@ -69,12 +86,14 @@ function buildChatInstruction(systemInstruction) {
 }
 
 export async function* streamChatWithGemini(systemInstruction, history, newMessage, currentProfile, projectId, targetModel, options = {}) {
-  const { actualModelName, useGptsChatApi } = resolveModelConfig(targetModel);
+  const { actualModelName, useGptsChatApi, useGptsMessagesApi } = resolveModelConfig(targetModel);
   const profileMode = options.profileMode !== false;
 
   const API_URL = useGptsChatApi
     ? `${GPTS_API_BASE_URL}/v1/chat/completions`
-    : `https://api.ricoxueai.cn/v1beta/models/${actualModelName}:streamGenerateContent?alt=sse`;
+    : useGptsMessagesApi
+      ? `${GPTS_API_BASE_URL}/v1/messages`
+      : `https://api.ricoxueai.cn/v1beta/models/${actualModelName}:streamGenerateContent?alt=sse`;
 
   const instruction = profileMode
     ? buildPositioningInstruction(systemInstruction, currentProfile)
@@ -112,6 +131,24 @@ export async function* streamChatWithGemini(systemInstruction, history, newMessa
       "Content-Type": "application/json",
       "Authorization": `Bearer ${GPTS_API_KEY}`
     };
+  } else if (useGptsMessagesApi) {
+    const messages = [];
+    messages.push({ role: 'user', content: `${instruction}\n\n请先确认你已理解以上规则，然后继续回答用户问题。` });
+    messages.push({ role: 'assistant', content: "好的，我已理解规则。" });
+    for (const msg of history) {
+      messages.push({ role: msg.role === 'model' ? 'assistant' : 'user', content: msg.content });
+    }
+    messages.push({ role: 'user', content: newMessage });
+
+    payload = {
+      model: actualModelName,
+      messages,
+      max_tokens: 8192
+    };
+    headers = {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${GPTS_API_KEY}`
+    };
   } else {
     payload = { contents: contents };
     headers = {
@@ -131,43 +168,60 @@ export async function* streamChatWithGemini(systemInstruction, history, newMessa
     throw new Error(`API Error: ${response.status} ${errorText}`);
   }
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder("utf-8");
-  let buffer = "";
   let fullText = "";
   let usage = null;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop(); // keep incomplete line
-    
-    for (const line of lines) {
-      if (line.startsWith("data: ")) {
-        const dataStr = line.slice(6).trim();
-        if (dataStr === "[DONE]") continue;
-        if (!dataStr) continue;
-        
-        try {
-          const data = JSON.parse(dataStr);
-          const streamUsage = data.usage || data.x_gpts_usage || null;
-          if (streamUsage) usage = streamUsage;
-          let textChunk = "";
-          if (useGptsChatApi) {
-            textChunk = data.choices?.[0]?.delta?.content || "";
-          } else {
-            textChunk = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-          }
+  if (useGptsMessagesApi) {
+    const data = await response.json();
+    fullText = extractAnthropicText(data.content);
+    usage = data.usage
+      ? {
+          prompt_tokens: data.usage.input_tokens || 0,
+          completion_tokens: data.usage.output_tokens || 0,
+          total_tokens: (data.usage.input_tokens || 0) + (data.usage.output_tokens || 0)
+        }
+      : null;
+
+    if (fullText) {
+      yield { chunk: fullText, fullText };
+    }
+  } else {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop(); // keep incomplete line
+      
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          const dataStr = line.slice(6).trim();
+          if (dataStr === "[DONE]") continue;
+          if (!dataStr) continue;
           
-          if (textChunk) {
-            fullText += textChunk;
-            yield { chunk: textChunk, fullText };
+          try {
+            const data = JSON.parse(dataStr);
+            const streamUsage = data.usage || data.x_gpts_usage || null;
+            if (streamUsage) usage = streamUsage;
+            let textChunk = "";
+            if (useGptsChatApi) {
+              textChunk = data.choices?.[0]?.delta?.content || "";
+            } else {
+              textChunk = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+            }
+            
+            if (textChunk) {
+              fullText += textChunk;
+              yield { chunk: textChunk, fullText };
+            }
+          } catch (e) {
+            // ignore parse error
           }
-        } catch (e) {
-          // ignore parse error
         }
       }
     }
@@ -233,17 +287,38 @@ export async function* streamChatWithGemini(systemInstruction, history, newMessa
 
 
 export async function analyzeVideoWithGemini(systemInstruction, teardown, targetModel) {
-  const { actualModelName, useGptsChatApi } = resolveModelConfig(targetModel);
+  const { actualModelName, useGptsChatApi, useGptsMessagesApi } = resolveModelConfig(targetModel);
 
   const API_URL = useGptsChatApi
     ? `${GPTS_API_BASE_URL}/v1/chat/completions`
-    : `https://api.ricoxueai.cn/v1beta/models/${actualModelName}:generateContent`;
+    : useGptsMessagesApi
+      ? `${GPTS_API_BASE_URL}/v1/messages`
+      : `https://api.ricoxueai.cn/v1beta/models/${actualModelName}:generateContent`;
 
   let promptText = `请分析以下视频内容：\n标题：${teardown.title}\n作者：${teardown.user_name}\n发布时间：${teardown.date_published}\n内容描述：${teardown.content}`;
   if (teardown.video_url) {
     promptText += `\n视频原始链接：${teardown.video_url}`;
   }
 
+  return await callLlmWithPrompt(API_URL, actualModelName, { useGptsChatApi, useGptsMessagesApi }, systemInstruction, promptText, teardown.cover_image);
+}
+
+export async function analyzeTopicLibraryContent(systemInstruction, topicContent, targetModel) {
+  const { actualModelName, useGptsChatApi, useGptsMessagesApi } = resolveModelConfig(targetModel);
+
+  const API_URL = useGptsChatApi
+    ? `${GPTS_API_BASE_URL}/v1/chat/completions`
+    : useGptsMessagesApi
+      ? `${GPTS_API_BASE_URL}/v1/messages`
+      : `https://api.ricoxueai.cn/v1beta/models/${actualModelName}:generateContent`;
+
+  const promptText = `请分析以下内容：\n${topicContent}`;
+
+  return await callLlmWithPrompt(API_URL, actualModelName, { useGptsChatApi, useGptsMessagesApi }, systemInstruction, promptText);
+}
+
+async function callLlmWithPrompt(API_URL, actualModelName, apiConfig, systemInstruction, promptText, cover_image = null) {
+  const { useGptsChatApi, useGptsMessagesApi } = apiConfig;
   let payload, headers;
 
   if (useGptsChatApi) {
@@ -251,11 +326,10 @@ export async function analyzeVideoWithGemini(systemInstruction, teardown, target
       { type: "text", text: promptText }
     ];
 
-    // For OpenAI format with base64 image
-    if (teardown.cover_image) {
+    if (cover_image) {
       userContent.push({
         type: "image_url",
-        image_url: { url: teardown.cover_image }
+        image_url: { url: cover_image }
       });
     }
 
@@ -271,21 +345,36 @@ export async function analyzeVideoWithGemini(systemInstruction, teardown, target
       "Content-Type": "application/json",
       "Authorization": `Bearer ${GPTS_API_KEY}`
     };
+  } else if (useGptsMessagesApi) {
+    let userContent = `${promptText}`;
+    if (cover_image) {
+      userContent += `\n\n参考图片链接：${cover_image}`;
+    }
+    payload = {
+      model: actualModelName,
+      messages: [
+        { role: 'user', content: `${systemInstruction}\n\n${userContent}` }
+      ],
+      max_tokens: 8192
+    };
+    headers = {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${GPTS_API_KEY}`
+    };
   } else {
     const parts = [{ text: systemInstruction + "\n\n" + promptText }];
     
-    if (teardown.cover_image && teardown.cover_image.startsWith('data:image')) {
-      const mimeType = teardown.cover_image.split(';')[0].split(':')[1];
-      const base64Data = teardown.cover_image.split(',')[1];
+    if (cover_image && cover_image.startsWith('data:image')) {
+      const mimeType = cover_image.split(';')[0].split(':')[1];
+      const base64Data = cover_image.split(',')[1];
       parts.push({
         inlineData: {
           mimeType: mimeType,
           data: base64Data
         }
       });
-    } else if (teardown.cover_image) {
-       // Gemini Native API cannot take a direct URL in inlineData, so we just add the URL to the text
-       parts[0].text += `\n封面图链接：${teardown.cover_image}`;
+    } else if (cover_image) {
+       parts[0].text += `\n封面图链接：${cover_image}`;
     }
 
     payload = { contents: [{ role: 'user', parts }] };
@@ -311,6 +400,8 @@ export async function analyzeVideoWithGemini(systemInstruction, teardown, target
 
   if (useGptsChatApi) {
     text = data.choices?.[0]?.message?.content || "";
+  } else if (useGptsMessagesApi) {
+    text = extractAnthropicText(data.content);
   } else {
     text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
   }

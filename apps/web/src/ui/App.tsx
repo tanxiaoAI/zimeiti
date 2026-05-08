@@ -1,10 +1,28 @@
 import React, { useState, useEffect } from "react";
-import { 
-  Home, UserCheck, Scissors, Flame, ListTodo, Edit, MessageCircle,
-  Database, LineChart, Settings, UploadCloud, X, ChevronRight, 
-  CheckCircle2, Plus, Play, Image as ImageIcon, Copy, Sparkles, ChevronDown, Trash2, Send
+import {
+  UserCheck,
+  Scissors,
+  Flame,
+  ListTodo,
+  Edit,
+  MessageCircle,
+  Database,
+  LineChart,
+  Settings,
+  UploadCloud,
+  X,
+  ChevronRight,
+  Plus,
+  Image as ImageIcon,
+  Sparkles,
+  ChevronDown,
+  Trash2,
+  Send,
+  ChevronLeft
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { TopicLibraryView } from './TopicLibraryView';
+import { GenerateCoverView } from './GenerateCoverView';
 import './styles.css';
 
 const NAV_GROUPS = [
@@ -20,8 +38,10 @@ const NAV_GROUPS = [
     label: "创作中心",
     items: [
       { id: "hot", title: "热点榜单", icon: Flame },
+      { id: "topic_library", title: "选题库", icon: Database },
       { id: "topics", title: "选题池", icon: ListTodo },
       { id: "editor", title: "内容编辑器", icon: Edit },
+      { id: "generate_cover", title: "生成封面", icon: ImageIcon },
     ]
   },
   {
@@ -55,6 +75,13 @@ function readScopedConfig(accountId: string, tab: string, field: string) {
 function writeScopedConfig(accountId: string, tab: string, field: string, value: string) {
   if (!accountId) return;
   localStorage.setItem(getScopedConfigKey(accountId, tab, field), value);
+}
+
+function removeScopedConfig(accountId: string, tab: string, field: string) {
+  if (accountId) {
+    localStorage.removeItem(getScopedConfigKey(accountId, tab, field));
+  }
+  localStorage.removeItem(getLegacyConfigKey(tab, field));
 }
 
 function clearProjectScopedConfig(accountId: string) {
@@ -273,6 +300,7 @@ export default function App() {
   const [activeTopic, setActiveTopic] = useState<any>(null);
   const [isConfigOpen, setIsConfigOpen] = useState(false);
   const [isAccountDropdownOpen, setIsAccountDropdownOpen] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [accounts, setAccounts] = useState<any[]>([]);
   const [activeAccountId, setActiveAccountId] = useState("");
 
@@ -382,7 +410,9 @@ export default function App() {
       case "positioning": return <PositioningView activeAccountId={activeAccountId} />;
       case "teardown": return <TeardownView activeAccountId={activeAccountId} />;
       case "hot": return <HotView onUseKeyword={(kw) => { setActiveNav("topics"); }} />;
+      case "topic_library": return <TopicLibraryView activeAccountId={activeAccountId} />;
       case "topics": return <TopicsView onSelectTopic={handleTopicSelect} />;
+      case "generate_cover": return <GenerateCoverView activeAccountId={activeAccountId} />;
       case "editor": return <EditorView topic={activeTopic} />;
       case "analytics": return <AnalyticsView />;
       case "config": return <ConfigView activeAccountId={activeAccountId} />;
@@ -395,143 +425,158 @@ export default function App() {
   return (
     <div className="app-container">
       {/* 侧边栏 */}
-      <aside className="sidebar">
-        <div className="brand" style={{ marginBottom: 16 }}>
-          <div className="brand-icon">
-            <Edit size={22} />
-          </div>
-          <h1>自媒体助手</h1>
+      <aside className={`sidebar ${isSidebarCollapsed ? 'collapsed' : ''}`} style={{ transition: 'width 0.3s ease', width: isSidebarCollapsed ? '72px' : '220px', padding: isSidebarCollapsed ? '16px 10px' : '18px 12px' }}>
+        <div className="brand brand-text-only" style={{ marginBottom: 10, justifyContent: isSidebarCollapsed ? 'center' : 'flex-start', padding: isSidebarCollapsed ? '0' : '0 8px' }}>
+          {!isSidebarCollapsed && <h1>自媒体助手</h1>}
         </div>
+
+        {/* 折叠按钮 */}
+        <button 
+          onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+          className="btn-icon sidebar-toggle"
+          style={{ position: 'absolute', top: 18, right: -12, zIndex: 20 }}
+        >
+          {isSidebarCollapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+        </button>
 
         {/* 账号切换器 */}
-        <div style={{ position: 'relative', marginBottom: 32, padding: '0 12px' }}>
-          <button 
-            onClick={() => setIsAccountDropdownOpen(!isAccountDropdownOpen)}
-            style={{
-              width: '100%',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              padding: '12px',
-              background: 'var(--bg-hover)',
-              border: '1px solid var(--border-light)',
-              borderRadius: 'var(--radius-md)',
-              cursor: 'pointer',
-              color: 'var(--text-main)',
-              fontWeight: 600,
-              fontSize: '0.9rem'
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, overflow: 'hidden' }}>
-              <UserCheck size={16} color="var(--primary)" />
-              <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {activeAccount?.name || "未选择账号"}
-              </span>
-            </div>
-            <ChevronDown size={16} color="var(--text-muted)" style={{ transform: isAccountDropdownOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }} />
-          </button>
+        {!isSidebarCollapsed && (
+          <div style={{ position: 'relative', marginBottom: 18, padding: '0 8px' }}>
+            <button 
+              onClick={() => setIsAccountDropdownOpen(!isAccountDropdownOpen)}
+              style={{
+                width: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '9px 10px',
+                background: 'var(--bg-hover)',
+                border: '1px solid var(--border-light)',
+                borderRadius: 'var(--radius-md)',
+                cursor: 'pointer',
+                color: 'var(--text-main)',
+                fontWeight: 600,
+                fontSize: '0.8rem'
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, overflow: 'hidden' }}>
+                <UserCheck size={16} color="var(--primary)" />
+                <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {activeAccount?.name || "未选择账号"}
+                </span>
+              </div>
+              <ChevronDown size={16} color="var(--text-muted)" style={{ transform: isAccountDropdownOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }} />
+            </button>
 
-          <AnimatePresence>
-            {isAccountDropdownOpen && (
-              <>
-                <div 
-                  style={{ position: 'fixed', inset: 0, zIndex: 90 }} 
-                  onClick={() => setIsAccountDropdownOpen(false)} 
-                />
-                <motion.div 
-                  initial={{ opacity: 0, y: -10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -10 }}
-                  transition={{ duration: 0.15 }}
-                  style={{
-                    position: 'absolute',
-                    top: '100%',
-                    left: 12,
-                    right: 12,
-                    marginTop: 8,
-                    background: 'var(--bg-card)',
-                    border: '1px solid var(--border-light)',
-                    borderRadius: 'var(--radius-md)',
-                    boxShadow: 'var(--shadow-float)',
-                    zIndex: 100,
-                    overflow: 'hidden'
-                  }}
-                >
-                  <div style={{ padding: '8px 12px', fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)', background: 'var(--bg-hover)', borderBottom: '1px solid var(--border-light)' }}>
-                    切换或管理工作台账号
-                  </div>
-                  <div style={{ maxHeight: 200, overflowY: 'auto' }}>
-                    {accounts.map(acc => (
-                      <div 
-                        key={acc.id}
-                        onClick={() => {
-                          setActiveAccountId(acc.id);
-                          localStorage.setItem("active_account_id", acc.id);
-                          setIsAccountDropdownOpen(false);
-                        }}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          padding: '12px',
-                          cursor: 'pointer',
-                          background: acc.id === activeAccountId ? 'var(--primary-light)' : 'transparent',
-                          borderBottom: '1px solid var(--border-light)'
-                        }}
-                      >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, overflow: 'hidden' }}>
-                          <div style={{ width: 6, height: 6, borderRadius: '50%', background: acc.id === activeAccountId ? 'var(--primary)' : 'transparent' }} />
-                          <span style={{ fontSize: '0.9rem', color: acc.id === activeAccountId ? 'var(--primary)' : 'var(--text-main)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                            {acc.name}
-                          </span>
-                        </div>
-                        <button 
-                          onClick={(e) => handleDeleteAccount(acc.id, e)}
-                          style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 4 }}
-                          title="删除账号"
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                  <button 
-                    onClick={handleAddAccount}
+            <AnimatePresence>
+              {isAccountDropdownOpen && (
+                <>
+                  <div 
+                    style={{ position: 'fixed', inset: 0, zIndex: 90 }} 
+                    onClick={() => setIsAccountDropdownOpen(false)} 
+                  />
+                  <motion.div 
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    transition={{ duration: 0.15 }}
                     style={{
-                      width: '100%',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: 8,
-                      padding: '12px',
-                      background: 'transparent',
-                      border: 'none',
-                      cursor: 'pointer',
-                      color: 'var(--text-main)',
-                      fontSize: '0.85rem',
-                      fontWeight: 600
+                      position: 'absolute',
+                      top: '100%',
+                      left: 12,
+                      right: 12,
+                      marginTop: 8,
+                      background: 'var(--bg-card)',
+                      border: '1px solid var(--border-light)',
+                      borderRadius: 'var(--radius-md)',
+                      boxShadow: 'var(--shadow-float)',
+                      zIndex: 100,
+                      overflow: 'hidden'
                     }}
                   >
-                    <Plus size={16} /> 新增矩阵账号
-                  </button>
-                </motion.div>
-              </>
-            )}
-          </AnimatePresence>
-        </div>
+                    <div style={{ padding: '7px 10px', fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-muted)', background: 'var(--bg-hover)', borderBottom: '1px solid var(--border-light)' }}>
+                      切换或管理工作台账号
+                    </div>
+                    <div style={{ maxHeight: 200, overflowY: 'auto' }}>
+                      {accounts.map(acc => (
+                        <div 
+                          key={acc.id}
+                          onClick={() => {
+                            setActiveAccountId(acc.id);
+                            localStorage.setItem("active_account_id", acc.id);
+                            setIsAccountDropdownOpen(false);
+                          }}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            padding: '9px 10px',
+                            cursor: 'pointer',
+                            background: acc.id === activeAccountId ? 'var(--primary-light)' : 'transparent',
+                            borderBottom: '1px solid var(--border-light)'
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, overflow: 'hidden' }}>
+                            <div style={{ width: 6, height: 6, borderRadius: '50%', background: acc.id === activeAccountId ? 'var(--primary)' : 'transparent' }} />
+                            <span style={{ fontSize: '0.8rem', color: acc.id === activeAccountId ? 'var(--primary)' : 'var(--text-main)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {acc.name}
+                            </span>
+                          </div>
+                          <button 
+                            onClick={(e) => handleDeleteAccount(acc.id, e)}
+                            style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 4 }}
+                            title="删除账号"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    <button 
+                      onClick={handleAddAccount}
+                      style={{
+                        width: '100%',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: 8,
+                        padding: '10px',
+                        background: 'transparent',
+                        border: 'none',
+                        cursor: 'pointer',
+                        color: 'var(--text-main)',
+                        fontSize: '0.78rem',
+                        fontWeight: 600
+                      }}
+                    >
+                      <Plus size={16} /> 新增矩阵账号
+                    </button>
+                  </motion.div>
+                </>
+              )}
+            </AnimatePresence>
+          </div>
+        )}
 
         <nav style={{ flex: 1, overflowY: 'auto' }}>
           {NAV_GROUPS.map((group) => (
-            <div key={group.label} className="nav-group">
-              <div className="nav-group-title">{group.label}</div>
+            <div key={group.label} className="nav-group" style={{ marginBottom: isSidebarCollapsed ? 12 : 16 }}>
+              {!isSidebarCollapsed && <div className="nav-group-title">{group.label}</div>}
               {group.items.map((item) => (
                 <button 
                   key={item.id}
+                  title={isSidebarCollapsed ? item.title : ''}
                   className={`nav-item ${activeNav === item.id ? 'active' : ''}`}
                   onClick={() => setActiveNav(item.id)}
+                  style={{ 
+                    justifyContent: isSidebarCollapsed ? 'center' : 'flex-start',
+                    padding: isSidebarCollapsed ? '9px' : '8px 10px'
+                  }}
                 >
-                  <item.icon size={18} strokeWidth={activeNav === item.id ? 2.5 : 2} />
-                  {item.title}
+                  <span className="nav-item-icon" aria-hidden="true">
+                    <item.icon size={16} strokeWidth={activeNav === item.id ? 2.35 : 2} />
+                  </span>
+                  {!isSidebarCollapsed && <span>{item.title}</span>}
                 </button>
               ))}
             </div>
@@ -539,9 +584,11 @@ export default function App() {
         </nav>
         
         <div style={{ marginTop: 'auto', paddingTop: '16px', borderTop: '1px solid var(--border-light)' }}>
-          <div className="nav-item" style={{ fontSize: '0.8rem', cursor: 'default' }}>
-            <span style={{ color: 'var(--success)', display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: 'currentColor', marginRight: 8 }} />
-            API Mock 模式运行中
+          <div className="nav-item" style={{ fontSize: '0.72rem', cursor: 'default', justifyContent: isSidebarCollapsed ? 'center' : 'flex-start', padding: isSidebarCollapsed ? '9px' : '8px 10px' }} title={isSidebarCollapsed ? "API Mock 模式运行中" : ""}>
+            <span className="nav-item-icon nav-item-status" aria-hidden="true">
+              <span style={{ color: 'var(--success)', display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: 'currentColor' }} />
+            </span>
+            {!isSidebarCollapsed && "API Mock 模式运行中"}
           </div>
         </div>
       </aside>
@@ -627,10 +674,9 @@ export default function App() {
 function ConfigView({ activeAccountId }: { activeAccountId: string }) {
   const [activeTab, setActiveTab] = useState("free_chat");
   const [promptValue, setPromptValue] = useState("");
-  const [constraintValue, setConstraintValue] = useState("");
   const [greetingValue, setGreetingValue] = useState("");
   const [fileName, setFileName] = useState("");
-  const [selectedModel, setSelectedModel] = useState("claude-opus-4-6");
+  const [selectedModel, setSelectedModel] = useState("gpt-5.5");
   const [fileStatus, setFileStatus] = useState("");
   const [uploading, setUploading] = useState(false);
 
@@ -644,6 +690,12 @@ function ConfigView({ activeAccountId }: { activeAccountId: string }) {
     { id: "body", title: "正文与脚本填充" },
     { id: "analytics", title: "数据复盘诊断" },
   ];
+
+  useEffect(() => {
+    for (const option of configOptions) {
+      removeScopedConfig(activeAccountId, option.id, "constraint");
+    }
+  }, [activeAccountId]);
 
   const fetchContextFileInfo = async (tab: string) => {
     if (!activeAccountId) {
@@ -679,7 +731,7 @@ function ConfigView({ activeAccountId }: { activeAccountId: string }) {
     if (savedModel) {
       setSelectedModel(savedModel);
     } else {
-      setSelectedModel("claude-opus-4-6");
+      setSelectedModel("gpt-5.5");
     }
 
     const savedPrompt = readScopedConfig(activeAccountId, activeTab, "prompt");
@@ -687,13 +739,6 @@ function ConfigView({ activeAccountId }: { activeAccountId: string }) {
       setPromptValue(savedPrompt);
     } else {
       setPromptValue(`作为资深的【${configOptions.find(o => o.id === activeTab)?.title}】专家...\n1. 语气要求：专业、真诚、不爹味\n2. 格式要求：严格遵循输出结构...`);
-    }
-
-    const savedConstraint = readScopedConfig(activeAccountId, activeTab, "constraint");
-    if (savedConstraint !== null) {
-      setConstraintValue(savedConstraint);
-    } else {
-      setConstraintValue("必须包含具体的数字指标，结尾不要加多余的问候语。");
     }
 
     const savedGreeting = readScopedConfig(activeAccountId, activeTab, "greeting");
@@ -713,7 +758,7 @@ function ConfigView({ activeAccountId }: { activeAccountId: string }) {
   const handleSave = () => {
     writeScopedConfig(activeAccountId, activeTab, "model", selectedModel);
     writeScopedConfig(activeAccountId, activeTab, "prompt", promptValue);
-    writeScopedConfig(activeAccountId, activeTab, "constraint", constraintValue);
+    removeScopedConfig(activeAccountId, activeTab, "constraint");
     if (activeTab === "positioning" || activeTab === "free_chat") {
       writeScopedConfig(activeAccountId, activeTab, "greeting", greetingValue);
     }
@@ -782,7 +827,7 @@ function ConfigView({ activeAccountId }: { activeAccountId: string }) {
     <div>
       <div className="page-header">
         <h2>系统配置中心</h2>
-        <p>为每个功能模块单独配置系统提示词 (System Prompt)、预设参数与专属知识库约束。</p>
+        <p>为每个功能模块单独配置系统提示词、模型与专属全文参考文件。</p>
       </div>
 
       <div style={{ display: 'flex', gap: 24, alignItems: 'flex-start' }}>
@@ -813,7 +858,10 @@ function ConfigView({ activeAccountId }: { activeAccountId: string }) {
               value={selectedModel}
               onChange={e => setSelectedModel(e.target.value)}
             >
+              <option value="gpt-5.4">gpt-5.4</option>
+              <option value="gpt-5.5">gpt-5.5</option>
               <option value="claude-opus-4-6">claude-opus-4-6</option>
+              <option value="claude-sonnet-4-6-thinking">claude-sonnet-4-6-thinking</option>
               <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
               <option value="gpts-gemini-3.1-pro-preview">gemini-3.1-pro-preview</option>
             </select>
@@ -833,15 +881,6 @@ function ConfigView({ activeAccountId }: { activeAccountId: string }) {
             <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: 8 }}>
               此提示词将作为该功能调用大模型时的 System Role。
             </p>
-          </div>
-
-          <div className="form-row">
-            <label>个性化偏好约束 (User Prompt 补充)</label>
-            <input 
-              className="input-field" 
-              value={constraintValue}
-              onChange={e => setConstraintValue(e.target.value)}
-            />
           </div>
 
           {(activeTab === "positioning" || activeTab === "free_chat") && (
@@ -1055,11 +1094,9 @@ function PositioningView({ activeAccountId }: { activeAccountId: string }) {
     setMessages(prev => [...prev, { id: tempId, role: "user", content: msg }]);
 
     try {
-      const savedModel = readScopedConfig(activeAccountId, 'positioning', 'model') || "claude-opus-4-6";
+      const savedModel = readScopedConfig(activeAccountId, 'positioning', 'model') || "gpt-5.5";
       const savedPrompt = readScopedConfig(activeAccountId, 'positioning', 'prompt') || "你是一个资深的自媒体账号定位专家。你的目标是和用户对话，帮他们梳理出账号的赛道、人设和内容支柱。";
-      const savedConstraint = readScopedConfig(activeAccountId, 'positioning', 'constraint') || "";
-      
-      const systemInstruction = savedPrompt + (savedConstraint ? `\n\n用户补充的偏好约束：\n${savedConstraint}` : "");
+      const systemInstruction = savedPrompt;
 
       const res = await fetch(`/api/v1/projects/${activeAccountId}/positioning/chat`, {
         method: "POST",
@@ -1424,10 +1461,9 @@ function FreeChatView({ activeAccountId }: { activeAccountId: string }) {
     setMessages(prev => [...prev, { id: tempId, role: "user", content: msg }]);
 
     try {
-      const savedModel = readScopedConfig(activeAccountId, 'free_chat', 'model') || "claude-opus-4-6";
+      const savedModel = readScopedConfig(activeAccountId, 'free_chat', 'model') || "gpt-5.5";
       const savedPrompt = readScopedConfig(activeAccountId, 'free_chat', 'prompt') || "你是一个专业、友好、简洁的自由对话助手。请用中文与用户进行自然的多轮交流，优先给出清晰、可执行的回答。";
-      const savedConstraint = readScopedConfig(activeAccountId, 'free_chat', 'constraint') || "";
-      const systemInstruction = savedPrompt + (savedConstraint ? `\n\n用户补充的偏好约束：\n${savedConstraint}` : "");
+      const systemInstruction = savedPrompt;
 
       const res = await fetch(`/api/v1/projects/${activeAccountId}/free-chat`, {
         method: "POST",
@@ -1757,10 +1793,9 @@ function TeardownView({ activeAccountId }: { activeAccountId: string }) {
     if (!teardownData || !teardownData.id) return;
     setAnalyzing(true);
     try {
-      const savedModel = readScopedConfig(activeAccountId, 'teardown', 'model') || "claude-opus-4-6";
+      const savedModel = readScopedConfig(activeAccountId, 'teardown', 'model') || "gpt-5.5";
       const savedPrompt = readScopedConfig(activeAccountId, 'teardown', 'prompt') || "你是一个资深的视频内容拆解专家。请仔细分析提供的视频标题、内容、作者等信息，总结出这篇内容的钩子、结构、亮点和可复用模板。";
-      const savedConstraint = readScopedConfig(activeAccountId, 'teardown', 'constraint') || "";
-      const systemInstruction = savedPrompt + (savedConstraint ? `\n\n补充要求：\n${savedConstraint}` : "");
+      const systemInstruction = savedPrompt;
 
       const res = await fetch(`/api/v1/projects/${activeAccountId}/video-teardown/${teardownData.id}/analyze`, {
         method: "POST",
