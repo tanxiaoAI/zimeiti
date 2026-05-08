@@ -4,6 +4,8 @@ import cors from "cors";
 import path from "node:path";
 import fs from "node:fs";
 import { randomUUID } from "node:crypto";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { requestContext } from "./middlewares/requestContext.js";
 import { authApiKey } from "./middlewares/authApiKey.js";
@@ -263,6 +265,50 @@ function guessAsrFormatFromUrl(mediaUrl) {
   if (cleanUrl.endsWith(".mp4") || /mime_type=video_mp4/i.test(rawUrl) || /\/video\//i.test(rawUrl) || /douyinvod\.com/i.test(rawUrl)) return "mp4";
   if (/mime_type=audio_mp3/i.test(rawUrl)) return "mp3";
   return "mp3";
+}
+
+function inferMediaExtension(mediaUrl, contentType = "") {
+  const rawUrl = String(mediaUrl || "");
+  const cleanUrl = rawUrl.split("?")[0].toLowerCase();
+  const contentTypeLower = String(contentType || "").toLowerCase();
+  const pathnameExt = path.extname(cleanUrl);
+
+  if (pathnameExt) return pathnameExt;
+  if (contentTypeLower.includes("video/mp4")) return ".mp4";
+  if (contentTypeLower.includes("audio/mpeg")) return ".mp3";
+  if (contentTypeLower.includes("audio/wav")) return ".wav";
+  if (contentTypeLower.includes("audio/ogg")) return ".ogg";
+  if (/mime_type=video_mp4/i.test(rawUrl) || /douyinvod\.com/i.test(rawUrl) || /\/video\//i.test(rawUrl)) return ".mp4";
+  if (/mime_type=audio_mp3/i.test(rawUrl)) return ".mp3";
+  return ".bin";
+}
+
+function getPublicBaseUrl(req) {
+  const host = req.get("host");
+  const forwardedProto = String(req.get("x-forwarded-proto") || "").split(",")[0].trim();
+  const protocol = forwardedProto || (req.protocol === "http" && host.includes("zeabur.app") ? "https" : req.protocol);
+  return `${protocol}://${host}`;
+}
+
+async function mirrorRemoteMediaToPublicUrl(remoteUrl, req, prefix = "topic_media") {
+  const response = await fetch(remoteUrl, {
+    headers: {
+      "User-Agent": "Mozilla/5.0"
+    }
+  });
+
+  if (!response.ok || !response.body) {
+    throw new Error(`媒体文件下载失败(${response.status}): 无法获取可用内容`);
+  }
+
+  if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+  const ext = inferMediaExtension(remoteUrl, response.headers.get("content-type"));
+  const filename = `${prefix}_${Date.now()}_${randomUUID()}${ext}`;
+  const localPath = path.join(uploadsDir, filename);
+
+  await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(localPath));
+
+  return `${getPublicBaseUrl(req)}/static/uploads/${filename}`;
 }
 
 async function submitVolcAsrTask(mediaUrl) {
@@ -1023,13 +1069,15 @@ app.post("/api/v1/projects/:projectId/topic-library/extract", authApiKey, async 
   
   try {
     const parsed = await resolveVideoUrlByPlatform(link, platform);
-    const transcript = await transcribeMediaByVolc(parsed.videoUrl);
+    const mirroredMediaUrl = await mirrorRemoteMediaToPublicUrl(parsed.videoUrl, req, "topic_extract");
+    const transcript = await transcribeMediaByVolc(mirroredMediaUrl);
 
     res.json(ok({
       content: transcript,
       platform,
       source_link: link,
       resolved_video_url: parsed.videoUrl,
+      mirrored_media_url: mirroredMediaUrl,
       parser: parsed.parser,
       note_title: parsed.noteTitle,
       note_desc: parsed.noteDesc
@@ -1043,8 +1091,8 @@ app.post("/api/v1/projects/:projectId/topic-library/extract", authApiKey, async 
 app.post("/api/v1/projects/:projectId/topic-library/analyze", authApiKey, async (req, res) => {
   const request_id = req.context?.requestId;
   const { systemInstruction, models, topicName, refContent } = req.body;
+  const normalizedRefContent = String(refContent || "").trim() || "无";
   
-  if (!refContent) return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "缺少文案内容" }, request_id));
   if (!models || models.length === 0) return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "至少需要选择一个模型" }, request_id));
   
   try {
@@ -1052,7 +1100,7 @@ app.post("/api/v1/projects/:projectId/topic-library/analyze", authApiKey, async 
       try {
         const result = await analyzeTopicLibraryContent(
           systemInstruction || "你是一个资深自媒体内容分析师。",
-          { topicName, refContent },
+          { topicName, refContent: normalizedRefContent },
           model
         );
         return { model, result, error: null };
