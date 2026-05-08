@@ -376,6 +376,13 @@ function isVolcUriError(message) {
   return /Invalid audio URI|audio download failed/i.test(text);
 }
 
+function buildTopicExtractFallbackContent(parsed) {
+  const parts = [parsed?.noteTitle, parsed?.noteDesc]
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+  return Array.from(new Set(parts)).join("\n\n").trim();
+}
+
 async function transcribeMediaByVolc(mediaUrl) {
   const requestId = await submitVolcAsrTask(mediaUrl);
 
@@ -1094,7 +1101,21 @@ app.post("/api/v1/projects/:projectId/topic-library/extract", authApiKey, async 
     } catch (mirrorError) {
       console.warn("topic-library extract mirror failed:", mirrorError.message);
     }
-    const transcript = await transcribeMediaWithFallback([parsed.videoUrl, mirroredMediaUrl]);
+    let transcript = "";
+    let extractFallback = null;
+    try {
+      transcript = await transcribeMediaWithFallback([parsed.videoUrl, mirroredMediaUrl]);
+    } catch (transcribeError) {
+      const fallbackContent = buildTopicExtractFallbackContent(parsed);
+      if (!fallbackContent) {
+        throw transcribeError;
+      }
+      transcript = fallbackContent;
+      extractFallback = {
+        source: "title_desc_fallback",
+        reason: transcribeError.message
+      };
+    }
 
     res.json(ok({
       content: transcript,
@@ -1102,6 +1123,7 @@ app.post("/api/v1/projects/:projectId/topic-library/extract", authApiKey, async 
       source_link: link,
       resolved_video_url: parsed.videoUrl,
       mirrored_media_url: mirroredMediaUrl,
+      extract_fallback: extractFallback,
       parser: parsed.parser,
       note_title: parsed.noteTitle,
       note_desc: parsed.noteDesc
