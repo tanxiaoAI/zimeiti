@@ -48,6 +48,16 @@ export async function apiPatch<T>(path: string, body: any, apiKey?: string): Pro
   return json.data;
 }
 
+export async function apiDelete<T>(path: string, apiKey?: string): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "DELETE",
+    headers: apiKey ? { "X-API-Key": apiKey } : {}
+  });
+  const json = (await res.json()) as ApiResp<T>;
+  if (isFail(json)) throw new Error(`${json.error.code}: ${json.error.message}`);
+  return json.data;
+}
+
 export async function apiUpload<T>(path: string, form: FormData, apiKey?: string): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, { method: "POST", headers: apiKey ? { "X-API-Key": apiKey } : {}, body: form });
   const json = (await res.json()) as ApiResp<T>;

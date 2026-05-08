@@ -3,6 +3,7 @@ import express from "express";
 import cors from "cors";
 import path from "node:path";
 import fs from "node:fs";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { requestContext } from "./middlewares/requestContext.js";
 import { authApiKey } from "./middlewares/authApiKey.js";
@@ -46,11 +47,21 @@ import {
   deleteChatMessage,
   saveContextFile,
   getContextFile,
-  getContextFileMeta
+  getContextFileMeta,
+  listTopicOptions,
+  createTopicOption,
+  getTopicOption,
+  updateTopicOption,
+  deleteTopicOption,
+  listTopicLibrary,
+  createTopicLibraryItem,
+  getTopicLibraryItem,
+  updateTopicLibraryItem,
+  deleteTopicLibraryItem
 } from "./services/appStore.js";
 import { addVideoTeardown, listVideoTeardowns, getVideoTeardown, updateVideoTeardown, deleteVideoTeardown } from "./services/appStore.js";
 
-import { streamChatWithGemini, analyzeVideoWithGemini } from "./services/aiAgent.js";
+import { streamChatWithGemini, analyzeVideoWithGemini, analyzeTopicLibraryContent } from "./services/aiAgent.js";
 import { getLlmProvider } from "./providers/llm/index.js";
 import { getHotProvider } from "./providers/hot/index.js";
 import { getCoverProvider } from "./providers/cover/index.js";
@@ -82,6 +93,260 @@ app.get("/health", (req, res) => {
 });
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500 * 1024 * 1024 } });
+
+const GETONE_API_BASE_URL = (process.env.GETONE_API_BASE_URL || "https://api.getoneapi.com").replace(/\/$/, "");
+const GETONE_API_KEY = process.env.GETONE_API_KEY || "nDk3BzSLRneqvZeO3GXv88lvXNntVtYvZDm8nYrTj2a55d5hILLuh94f4RQvwWYM";
+const VOLC_ASR_API_KEY = process.env.VOLC_ASR_API_KEY || "e2843f9f-c542-4e5c-8213-d4a48371dd65";
+const VOLC_ASR_RESOURCE_ID = process.env.VOLC_ASR_RESOURCE_ID || "volc.seedasr.auc";
+
+function extractXiaohongshuNoteId(link) {
+  const patterns = [
+    /xiaohongshu\.com\/explore\/([a-zA-Z0-9]+)/i,
+    /xiaohongshu\.com\/discovery\/item\/([a-zA-Z0-9]+)/i,
+    /noteId=([a-zA-Z0-9]+)/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = link.match(pattern);
+    if (match?.[1]) return match[1];
+  }
+  return null;
+}
+
+async function callGetOneApi(endpoint, body) {
+  const response = await fetch(`${GETONE_API_BASE_URL}${endpoint}`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${GETONE_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+
+  const result = await response.json();
+  if (result?.code !== 200) {
+    throw new Error(result?.message || `GetOneAPI 调用失败(code=${result?.code ?? "unknown"})`);
+  }
+  return result.data;
+}
+
+function pickXiaohongshuVideoUrl(getOneData) {
+  const note = getOneData?.note_list?.[0];
+  const streams = [
+    ...(note?.video_info_v2?.media?.stream?.h264 || []),
+    ...(note?.video_info_v2?.media?.stream?.h265 || [])
+  ].filter(item => item?.master_url);
+
+  if (streams.length === 0) {
+    throw new Error("小红书详情接口已返回成功，但未找到可用的视频下载地址");
+  }
+
+  const preferred = streams.find(item => item.default_stream === 1) || streams[0];
+  return {
+    videoUrl: preferred.master_url,
+    noteTitle: note?.title || "",
+    noteDesc: note?.desc || ""
+  };
+}
+
+function collectCandidateVideoUrls(node, hits = [], path = "root") {
+  if (!node) return hits;
+
+  if (typeof node === "string") {
+    const value = node.trim();
+    if (/^https?:\/\//i.test(value) && /\.(mp4|m3u8|mov|mp3|wav|aac)(\?|$)/i.test(value)) {
+      hits.push({ url: value, path });
+    }
+    return hits;
+  }
+
+  if (Array.isArray(node)) {
+    node.forEach((item, index) => collectCandidateVideoUrls(item, hits, `${path}[${index}]`));
+    return hits;
+  }
+
+  if (typeof node === "object") {
+    for (const [key, value] of Object.entries(node)) {
+      collectCandidateVideoUrls(value, hits, `${path}.${key}`);
+    }
+  }
+
+  return hits;
+}
+
+function rankCandidateVideoUrl(candidate) {
+  const key = candidate.path.toLowerCase();
+  let score = 0;
+  if (key.includes("play_addr")) score += 50;
+  if (key.includes("playapi")) score += 30;
+  if (key.includes("url_list")) score += 25;
+  if (key.includes("uri")) score -= 20;
+  if (key.includes("cover")) score -= 60;
+  if (key.includes("dynamic_cover")) score -= 60;
+  if (key.includes("origin_cover")) score -= 60;
+  if (key.includes("images")) score -= 60;
+  if (/\.(mp4|mov|m3u8)(\?|$)/i.test(candidate.url)) score += 20;
+  if (/watermark/i.test(candidate.url)) score -= 5;
+  return score;
+}
+
+function pickDouyinVideoUrl(getOneData) {
+  const aweme =
+    getOneData?.aweme_detail ||
+    getOneData?.aweme_details?.[0] ||
+    getOneData?.data?.aweme_detail ||
+    getOneData?.data?.aweme_details?.[0] ||
+    getOneData;
+
+  const preferredUrls = [
+    ...(aweme?.video?.play_addr?.url_list || []),
+    ...(aweme?.video?.play_addr_h264?.url_list || []),
+    ...(aweme?.video?.download_addr?.url_list || []),
+    ...((aweme?.video?.bit_rate || []).flatMap(item => item?.play_addr?.url_list || []))
+  ].filter(Boolean);
+
+  if (preferredUrls.length > 0) {
+    return {
+      videoUrl: preferredUrls[0],
+      noteTitle: aweme?.desc || aweme?.title || "",
+      noteDesc: aweme?.desc || ""
+    };
+  }
+
+  const candidates = collectCandidateVideoUrls(getOneData)
+    .filter(item => !/cover|image|avatar/i.test(item.path))
+    .sort((a, b) => rankCandidateVideoUrl(b) - rankCandidateVideoUrl(a));
+
+  if (candidates.length === 0) {
+    throw new Error("抖音详情接口已返回成功，但未找到可用的视频下载地址");
+  }
+
+  return {
+    videoUrl: candidates[0].url,
+    noteTitle: aweme?.desc || aweme?.title || "",
+    noteDesc: aweme?.desc || ""
+  };
+}
+
+async function resolveVideoUrlByPlatform(link, platform) {
+  if (platform === "小红书") {
+    const noteId = extractXiaohongshuNoteId(link);
+    if (!noteId) {
+      throw new Error("未能从小红书链接中识别 noteId，请检查链接是否完整");
+    }
+    const getOneData = await callGetOneApi("/api/xiaohongshu/fetch_video_detail_v6", { noteId });
+    return {
+      ...pickXiaohongshuVideoUrl(getOneData),
+      parser: "getoneapi:xiaohongshu/fetch_video_detail_v6"
+    };
+  }
+
+  if (platform === "抖音") {
+    const getOneData = await callGetOneApi("/api/douyin/fetch_video_detail", { share_text: link, aweme_id: "" });
+    return {
+      ...pickDouyinVideoUrl(getOneData),
+      parser: "getoneapi:douyin/fetch_video_detail"
+    };
+  }
+
+  throw new Error("仅支持解析小红书和抖音视频链接");
+}
+
+function guessAsrFormatFromUrl(mediaUrl) {
+  const cleanUrl = String(mediaUrl || "").split("?")[0].toLowerCase();
+  if (cleanUrl.endsWith(".wav")) return "wav";
+  if (cleanUrl.endsWith(".ogg")) return "ogg";
+  if (cleanUrl.endsWith(".mp3")) return "mp3";
+  return "mp3";
+}
+
+async function submitVolcAsrTask(mediaUrl) {
+  const requestId = randomUUID();
+  const response = await fetch("https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Api-Key": VOLC_ASR_API_KEY,
+      "X-Api-Resource-Id": VOLC_ASR_RESOURCE_ID,
+      "X-Api-Request-Id": requestId,
+      "X-Api-Sequence": "-1"
+    },
+    body: JSON.stringify({
+      user: { uid: "ai-media-topic-library" },
+      audio: {
+        url: mediaUrl,
+        format: guessAsrFormatFromUrl(mediaUrl),
+        codec: "raw",
+        rate: 16000,
+        bits: 16,
+        channel: 1
+      },
+      request: {
+        model_name: "bigmodel",
+        enable_itn: true,
+        enable_punc: true,
+        enable_ddc: false,
+        enable_speaker_info: false,
+        enable_channel_split: false,
+        show_utterances: false,
+        vad_segment: false,
+        sensitive_words_filter: ""
+      }
+    })
+  });
+
+  const statusCode = response.headers.get("X-Api-Status-Code");
+  const statusMessage = response.headers.get("X-Api-Message");
+  if (statusCode !== "20000000") {
+    throw new Error(`火山语音提交失败(${statusCode || "unknown"}): ${statusMessage || "unknown error"}`);
+  }
+
+  return requestId;
+}
+
+async function queryVolcAsrTask(requestId) {
+  const response = await fetch("https://openspeech.bytedance.com/api/v3/auc/bigmodel/query", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Api-Key": VOLC_ASR_API_KEY,
+      "X-Api-Resource-Id": VOLC_ASR_RESOURCE_ID,
+      "X-Api-Request-Id": requestId
+    },
+    body: JSON.stringify({})
+  });
+
+  const statusCode = response.headers.get("X-Api-Status-Code");
+  const statusMessage = response.headers.get("X-Api-Message");
+  const data = await response.json().catch(() => ({}));
+
+  return { statusCode, statusMessage, data };
+}
+
+async function transcribeMediaByVolc(mediaUrl) {
+  const requestId = await submitVolcAsrTask(mediaUrl);
+
+  for (let i = 0; i < 20; i += 1) {
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    const { statusCode, statusMessage, data } = await queryVolcAsrTask(requestId);
+
+    if (statusCode === "20000000") {
+      const text = data?.result?.text?.trim();
+      if (!text) {
+        throw new Error("火山语音已完成，但未返回可用文本");
+      }
+      return text;
+    }
+
+    if (statusCode === "20000001" || statusCode === "20000002") {
+      continue;
+    }
+
+    throw new Error(`火山语音识别失败(${statusCode || "unknown"}): ${statusMessage || "unknown error"}`);
+  }
+
+  throw new Error("火山语音识别超时，请稍后重试");
+}
 
 async function handleProjectChat(req, res, chatType, options = {}) {
   const request_id = req.context?.requestId;
@@ -215,6 +480,89 @@ app.post("/api/v1/auth/api-keys/rotate", authApiKey, (req, res) => {
   const request_id = req.context?.requestId;
   const user_id = req.context?.userId;
   res.json(ok(rotateApiKey(user_id), request_id));
+});
+
+app.post("/api/v1/projects/:projectId/generate-cover", authApiKey, upload.single("file"), async (req, res) => {
+  const request_id = req.context?.requestId;
+  try {
+    const { prompt } = req.body;
+    if (!req.file || !prompt) {
+      return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "缺少图片文件或提示词" }, request_id));
+    }
+
+    // 保存图片到本地 uploads 目录
+    if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+    const ext = path.extname(req.file.originalname) || ".png";
+    const filename = `cover_${Date.now()}_${randomUUID()}${ext}`;
+    const localPath = path.join(uploadsDir, filename);
+    fs.writeFileSync(localPath, req.file.buffer);
+
+    // 拼接对外访问的完整 URL
+    // 如果是部署在 Zeabur，req.get("host") 将是 Zeabur 提供的公网域名
+    const host = req.get("host");
+    const protocol = req.protocol === "http" && host.includes("zeabur.app") ? "https" : req.protocol;
+    const imageUrl = `${protocol}://${host}/static/uploads/${filename}`;
+
+    // 调用 GPTS API 提交生图请求
+    const apiKey = process.env.GPTS_API_KEY || "sk-gf0b55ed57f88401d11c6ea2f96e345c00c2ddfa5b8z4XfJ";
+    const gptsRes = await fetch("https://api.gptsapi.net/api/v3/google/gemini-3.1-flash-image-preview/image-edit", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        prompt: prompt,
+        images: [imageUrl],
+        output_format: "jpeg"
+      })
+    });
+
+    const data = await gptsRes.json();
+    if (data.code !== 200 || !data.data?.id) {
+      throw new Error(`API 提交失败: ${data.message || JSON.stringify(data)}`);
+    }
+
+    // 返回轮询需要的 result_id
+    res.json(ok({ result_id: data.data.id, image_url: imageUrl, host_warning: host.includes("localhost") ? "注意: 当前为本地 localhost，外部 API 无法下载你的图片，可能会导致生成失败。请部署到公网后再试。" : null }, request_id));
+  } catch (e) {
+    console.error(e);
+    res.status(500).json(fail({ code: ErrorCodes.INTERNAL_ERROR, message: "生成封面请求失败：" + e.message }, request_id));
+  }
+});
+
+app.get("/api/v1/projects/:projectId/generate-cover/:resultId", authApiKey, async (req, res) => {
+  const request_id = req.context?.requestId;
+  try {
+    const { resultId } = req.params;
+    const apiKey = process.env.GPTS_API_KEY || "sk-gf0b55ed57f88401d11c6ea2f96e345c00c2ddfa5b8z4XfJ";
+    const gptsRes = await fetch(`https://api.gptsapi.net/api/v3/predictions/${resultId}/result`, {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`
+      }
+    });
+
+    const data = await gptsRes.json();
+    if (data.code !== 200) {
+      throw new Error(`查询失败: ${data.message}`);
+    }
+
+    const status = data.data?.status; // created, processing, succeeded, failed
+    if (status === "succeeded") {
+      // 成功，提取结果图片
+      const outputUrl = data.data.outputs?.[0] || null;
+      return res.json(ok({ status: "success", result_url: outputUrl }, request_id));
+    } else if (status === "failed") {
+      return res.json(ok({ status: "error", message: data.data.error || "生成失败" }, request_id));
+    } else {
+      // 还在处理中
+      return res.json(ok({ status: "processing" }, request_id));
+    }
+  } catch (e) {
+    console.error(e);
+    res.status(500).json(fail({ code: ErrorCodes.INTERNAL_ERROR, message: "查询状态失败：" + e.message }, request_id));
+  }
 });
 
 app.get("/api/v1/projects", authApiKey, (req, res) => {
@@ -585,6 +933,131 @@ app.delete("/api/v1/projects/:projectId/video-teardown/:id", authApiKey, (req, r
     return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "删除失败，记录不存在" }, request_id));
   }
   res.json(ok({ deleted: true }, request_id));
+});
+
+// -----------------------
+// Topic Library API
+// -----------------------
+
+app.get("/api/v1/projects/:projectId/topic-options", authApiKey, (req, res) => {
+  const request_id = req.context?.requestId;
+  const project = getProject(req.params.projectId);
+  if (!project) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在" }, request_id));
+  
+  const field = req.query.field;
+  if (!field) return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "缺少 field 参数" }, request_id));
+  
+  res.json(ok({ items: listTopicOptions(project.id, field) }, request_id));
+});
+
+app.post("/api/v1/projects/:projectId/topic-options", authApiKey, (req, res) => {
+  const request_id = req.context?.requestId;
+  const project = getProject(req.params.projectId);
+  if (!project) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在" }, request_id));
+  
+  if (!req.body.field || !req.body.value) {
+    return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "缺少必填字段" }, request_id));
+  }
+  
+  const created = createTopicOption(project.id, req.body);
+  res.json(ok(created, request_id));
+});
+
+app.put("/api/v1/projects/:projectId/topic-options/:id", authApiKey, (req, res) => {
+  const request_id = req.context?.requestId;
+  const updated = updateTopicOption(req.params.id, req.body);
+  res.json(ok(updated, request_id));
+});
+
+app.delete("/api/v1/projects/:projectId/topic-options/:id", authApiKey, (req, res) => {
+  const request_id = req.context?.requestId;
+  deleteTopicOption(req.params.id);
+  res.json(ok({ deleted: true }, request_id));
+});
+
+app.get("/api/v1/projects/:projectId/topic-library", authApiKey, (req, res) => {
+  const request_id = req.context?.requestId;
+  const project = getProject(req.params.projectId);
+  if (!project) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在" }, request_id));
+  res.json(ok({ items: listTopicLibrary(project.id) }, request_id));
+});
+
+app.post("/api/v1/projects/:projectId/topic-library", authApiKey, (req, res) => {
+  const request_id = req.context?.requestId;
+  const project = getProject(req.params.projectId);
+  if (!project) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在" }, request_id));
+  if (!req.body.name) return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "选题名称必填" }, request_id));
+  
+  const created = createTopicLibraryItem(project.id, req.body);
+  res.json(ok(created, request_id));
+});
+
+app.put("/api/v1/projects/:projectId/topic-library/:id", authApiKey, (req, res) => {
+  const request_id = req.context?.requestId;
+  const project = getProject(req.params.projectId);
+  if (!project) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在" }, request_id));
+  
+  const updated = updateTopicLibraryItem(req.params.id, req.body);
+  res.json(ok(updated, request_id));
+});
+
+app.delete("/api/v1/projects/:projectId/topic-library/:id", authApiKey, (req, res) => {
+  const request_id = req.context?.requestId;
+  deleteTopicLibraryItem(req.params.id);
+  res.json(ok({ deleted: true }, request_id));
+});
+
+app.post("/api/v1/projects/:projectId/topic-library/extract", authApiKey, async (req, res) => {
+  const request_id = req.context?.requestId;
+  const { link, platform } = req.body;
+  if (!link) return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "缺少参考链接" }, request_id));
+  
+  if (platform !== "小红书" && platform !== "抖音") {
+    return res.json(ok({ content: "仅能解析小红书和抖音视频内容" }, request_id));
+  }
+  
+  try {
+    const parsed = await resolveVideoUrlByPlatform(link, platform);
+    const transcript = await transcribeMediaByVolc(parsed.videoUrl);
+
+    res.json(ok({
+      content: transcript,
+      platform,
+      source_link: link,
+      resolved_video_url: parsed.videoUrl,
+      parser: parsed.parser,
+      note_title: parsed.noteTitle,
+      note_desc: parsed.noteDesc
+    }, request_id));
+  } catch (e) {
+    console.error(e);
+    res.status(500).json(fail({ code: ErrorCodes.INTERNAL_ERROR, message: "提取失败：" + e.message }, request_id));
+  }
+});
+
+app.post("/api/v1/projects/:projectId/topic-library/analyze", authApiKey, async (req, res) => {
+  const request_id = req.context?.requestId;
+  const { systemInstruction, models, content } = req.body;
+  
+  if (!content) return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "缺少文案内容" }, request_id));
+  if (!models || models.length === 0) return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "至少需要选择一个模型" }, request_id));
+  
+  try {
+    const promises = models.map(async (model) => {
+      try {
+        const result = await analyzeTopicLibraryContent(systemInstruction || "你是一个资深自媒体内容分析师。", content, model);
+        return { model, result, error: null };
+      } catch (e) {
+        return { model, result: null, error: e.message };
+      }
+    });
+    
+    const results = await Promise.all(promises);
+    res.json(ok({ results }, request_id));
+  } catch (e) {
+    console.error(e);
+    res.status(500).json(fail({ code: ErrorCodes.INTERNAL_ERROR, message: "AI分析失败：" + e.message }, request_id));
+  }
 });
 
 // capabilities/hot

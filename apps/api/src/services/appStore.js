@@ -35,6 +35,8 @@ export function deleteProject(project_id, user_id) {
     db.prepare("DELETE FROM video_teardowns WHERE project_id = ?").run(project_id);
     db.prepare("DELETE FROM chat_messages WHERE project_id = ?").run(project_id);
     db.prepare("DELETE FROM context_files WHERE project_id = ?").run(project_id);
+    db.prepare("DELETE FROM topic_library WHERE project_id = ?").run(project_id);
+    db.prepare("DELETE FROM topic_options WHERE project_id = ?").run(project_id);
     db.prepare("DELETE FROM projects WHERE id = ? AND user_id = ?").run(project_id, user_id);
   });
 
@@ -198,6 +200,77 @@ export function saveDraft(id, patch) {
   const next = { ...existing, ...patch, updated_at: new Date().toISOString() };
   drafts.set(id, next);
   return next;
+}
+
+// --- Topic Library & Options ---
+
+export function listTopicOptions(project_id, field) {
+  return db.prepare("SELECT * FROM topic_options WHERE project_id = ? AND field = ? ORDER BY created_at ASC").all(project_id, field);
+}
+
+export function createTopicOption(project_id, data) {
+  const id = `opt_${nanoid(8)}`;
+  db.prepare(`
+    INSERT INTO topic_options (id, project_id, field, value, color)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(id, project_id, data.field, data.value, data.color || null);
+  return getTopicOption(id);
+}
+
+export function getTopicOption(id) {
+  return db.prepare("SELECT * FROM topic_options WHERE id = ?").get(id) || null;
+}
+
+export function updateTopicOption(id, data) {
+  db.prepare(`
+    UPDATE topic_options SET value = ?, color = ? WHERE id = ?
+  `).run(data.value, data.color || null, id);
+  return getTopicOption(id);
+}
+
+export function deleteTopicOption(id) {
+  const result = db.prepare("DELETE FROM topic_options WHERE id = ?").run(id);
+  return result.changes > 0;
+}
+
+export function listTopicLibrary(project_id) {
+  return db.prepare("SELECT * FROM topic_library WHERE project_id = ? ORDER BY created_at DESC").all(project_id);
+}
+
+export function createTopicLibraryItem(project_id, data) {
+  const id = `tl_${nanoid(10)}`;
+  db.prepare(`
+    INSERT INTO topic_library (
+      id, project_id, name, judgment_result, judgment_reason, source,
+      ref_link, ref_platform, ref_content, ai_analysis_1, ai_analysis_2, ai_analysis_3
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id, project_id, data.name, data.judgment_result || null, data.judgment_reason || null,
+    data.source || null, data.ref_link || null, data.ref_platform || null,
+    data.ref_content || null, data.ai_analysis_1 || null, data.ai_analysis_2 || null, data.ai_analysis_3 || null
+  );
+  return getTopicLibraryItem(id);
+}
+
+export function getTopicLibraryItem(id) {
+  return db.prepare("SELECT * FROM topic_library WHERE id = ?").get(id) || null;
+}
+
+export function updateTopicLibraryItem(id, data) {
+  const fields = Object.keys(data).filter(k => k !== 'id' && k !== 'project_id' && k !== 'created_at');
+  if (fields.length === 0) return getTopicLibraryItem(id);
+  
+  const setClause = fields.map(f => `${f} = ?`).join(", ");
+  const values = fields.map(f => data[f]);
+  values.push(id);
+  
+  db.prepare(`UPDATE topic_library SET ${setClause} WHERE id = ?`).run(...values);
+  return getTopicLibraryItem(id);
+}
+
+export function deleteTopicLibraryItem(id) {
+  const result = db.prepare("DELETE FROM topic_library WHERE id = ?").run(id);
+  return result.changes > 0;
 }
 
 export function addGenerationLog(log) {

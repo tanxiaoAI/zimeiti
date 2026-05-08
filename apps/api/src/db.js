@@ -86,6 +86,33 @@ export function initDb() {
       FOREIGN KEY(project_id) REFERENCES projects(id)
     );
 
+    CREATE TABLE IF NOT EXISTS topic_library (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      judgment_result TEXT,
+      judgment_reason TEXT,
+      source TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      ref_link TEXT,
+      ref_platform TEXT,
+      ref_content TEXT,
+      ai_analysis_1 TEXT,
+      ai_analysis_2 TEXT,
+      ai_analysis_3 TEXT,
+      FOREIGN KEY(project_id) REFERENCES projects(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS topic_options (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      field TEXT NOT NULL,
+      value TEXT NOT NULL,
+      color TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(project_id) REFERENCES projects(id)
+    );
+
     -- Add new columns if they don't exist (using try-catch pattern in sqlite via altering is limited, so we do it safely if possible)
     -- In SQLite, we can just run ALTER TABLE, but it will throw if it exists. So we ignore errors or use pragma.
   `);
@@ -120,6 +147,13 @@ export function initDb() {
     INSERT OR IGNORE INTO customer_profiles (project_id) VALUES ('2');
     UPDATE projects SET name = '谈笑AI' WHERE id = '1';
     UPDATE projects SET name = 'Amy' WHERE id = '2';
+
+    -- Initialize default options for topic library
+    INSERT OR IGNORE INTO topic_options (id, project_id, field, value, color) VALUES ('opt_j_1_1', '1', 'judgment_result', '优质', '#10B981');
+    INSERT OR IGNORE INTO topic_options (id, project_id, field, value, color) VALUES ('opt_j_1_2', '1', 'judgment_result', '一般', '#F59E0B');
+    INSERT OR IGNORE INTO topic_options (id, project_id, field, value, color) VALUES ('opt_j_1_3', '1', 'judgment_result', '放弃', '#EF4444');
+    INSERT OR IGNORE INTO topic_options (id, project_id, field, value, color) VALUES ('opt_s_1_1', '1', 'source', '竞品', '#3B82F6');
+    INSERT OR IGNORE INTO topic_options (id, project_id, field, value, color) VALUES ('opt_s_1_2', '1', 'source', '灵感', '#8B5CF6');
   `);
 }
 
