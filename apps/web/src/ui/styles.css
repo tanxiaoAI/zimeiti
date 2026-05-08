@@ -977,6 +977,18 @@ input.topic-library-input-expanded {
 
 .topic-copy-drawer {
   max-width: min(1080px, 76vw) !important;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.topic-copy-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 16px;
 }
 
 .topic-copy-toolbar {
@@ -991,17 +1003,17 @@ input.topic-library-input-expanded {
 }
 
 .topic-copy-textarea {
-  min-height: 240px;
-  overflow: hidden;
+  flex: 1;
+  min-height: 320px;
+  max-height: calc(100vh - 240px);
+  overflow-y: auto;
 }
 
 .topic-copy-footer {
-  position: sticky;
-  bottom: 0;
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  padding: 12px 0 0;
-  background: linear-gradient(to bottom, rgba(255,255,255,0), var(--bg-card) 18px);
-  z-index: 2;
+  margin-top: auto;
+  padding-top: 12px;
+  background: var(--bg-card);
 }

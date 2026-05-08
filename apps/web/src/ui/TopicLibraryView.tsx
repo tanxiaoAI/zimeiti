@@ -450,17 +450,10 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
 function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
   const [extracting, setExtracting] = useState(false);
   const [content, setContent] = useState("");
-  const contentRef = React.useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
     if (topic) setContent(topic.ref_content || "");
   }, [topic]);
-
-  useEffect(() => {
-    if (!contentRef.current) return;
-    contentRef.current.style.height = "0px";
-    contentRef.current.style.height = `${Math.max(contentRef.current.scrollHeight, 240)}px`;
-  }, [content, topic]);
 
   const handleExtract = async () => {
     if (!topic?.ref_link) {
@@ -492,7 +485,7 @@ function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
 
   return (
     <Sheet open={!!topic} onOpenChange={(open) => !open && onClose()}>
-      <SheetContent className="topic-copy-drawer sm:max-w-[960px] w-[72vw] overflow-y-auto">
+      <SheetContent className="topic-copy-drawer sm:max-w-[960px] w-[72vw]">
         <SheetHeader className="mb-6">
           <SheetTitle>参考文案内容</SheetTitle>
           <SheetDescription>
@@ -500,7 +493,7 @@ function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
           </SheetDescription>
         </SheetHeader>
         
-        <div className="flex flex-col gap-4">
+        <div className="topic-copy-body">
           <div className="topic-copy-toolbar">
             <Input readOnly value={topic?.ref_link || "未填写链接"} className="bg-muted text-muted-foreground flex-1" />
             <Button type="button" className="topic-copy-extract-btn topic-primary-btn" onClick={handleExtract} disabled={extracting}>
@@ -510,7 +503,6 @@ function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
           </div>
           
           <textarea 
-            ref={contentRef}
             className="input-field topic-copy-textarea resize-none p-4 text-sm leading-relaxed" 
             placeholder="文案内容..." 
             value={content}
