@@ -389,15 +389,44 @@ async function callLlmWithPrompt(API_URL, actualModelName, apiConfig, systemInst
     };
   }
 
-  const response = await fetch(API_URL, {
-    method: "POST",
-    headers: headers,
-    body: JSON.stringify(payload)
-  });
+  const timeoutMs = Number(process.env.LLM_REQUEST_TIMEOUT_MS || 90000);
+  const shouldRetry = (status) => status === 502 || status === 503 || status === 504;
+
+  const requestOnce = async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(API_URL, {
+        method: "POST",
+        headers: headers,
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        throw new Error(`API Timeout: ${Math.round(timeoutMs / 1000)}s`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  let response = await requestOnce();
+  if (!response.ok && shouldRetry(response.status)) {
+    response = await requestOnce();
+  }
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`API Error: ${response.status} ${errorText}`);
+    if (response.status === 504) {
+      throw new Error("API Error: 504 网关超时，请稍后重试或切换模型");
+    }
+    const compactError = String(errorText || "")
+      .replace(/\s+/g, " ")
+      .replace(/<[^>]*>/g, "")
+      .slice(0, 220);
+    throw new Error(`API Error: ${response.status} ${compactError || "请求失败"}`);
   }
 
   const data = await response.json();

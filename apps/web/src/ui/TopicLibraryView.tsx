@@ -519,7 +519,7 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
       </Dialog>
 
       <Dialog open={analysisConfigOpen} onOpenChange={setAnalysisConfigOpen}>
-        <DialogContent className="sm:max-w-[960px]">
+        <DialogContent className="sm:max-w-[1180px]">
           <DialogHeader>
             <DialogTitle>AI 分析提示词配置</DialogTitle>
             <DialogDescription>
@@ -527,7 +527,7 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
             </DialogDescription>
           </DialogHeader>
           <textarea
-            className="input-field min-h-[360px] max-h-[65vh] resize-y p-4 text-sm leading-relaxed"
+            className="input-field topic-analysis-config-textarea resize-y p-4 text-sm leading-relaxed"
             value={topicPromptDraft}
             onChange={(e) => setTopicPromptDraft(e.target.value)}
             placeholder="请输入 AI 分析默认提示词"

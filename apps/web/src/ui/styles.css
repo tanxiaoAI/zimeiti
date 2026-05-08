@@ -417,6 +417,11 @@ textarea.input-field {
   resize: vertical;
 }
 
+.topic-analysis-config-textarea {
+  min-height: 460px !important;
+  max-height: 72vh;
+}
+
 .btn-primary {
   display: inline-flex;
   align-items: center;
