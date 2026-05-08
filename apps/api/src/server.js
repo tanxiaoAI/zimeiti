@@ -1119,15 +1119,15 @@ app.post("/api/v1/projects/:projectId/topic-library/extract", authApiKey, async 
       console.warn("topic-library extract mirror failed:", mirrorError.message);
     }
     let transcript = "";
+    let fallbackContent = "";
     let extractFallback = null;
     try {
       transcript = await transcribeMediaWithFallback([parsed.videoUrl, mirroredMediaUrl]);
     } catch (transcribeError) {
-      const fallbackContent = buildTopicExtractFallbackContent(parsed);
+      fallbackContent = buildTopicExtractFallbackContent(parsed);
       if (!fallbackContent) {
         throw transcribeError;
       }
-      transcript = fallbackContent;
       extractFallback = {
         source: "title_desc_fallback",
         reason: transcribeError.message
@@ -1136,6 +1136,8 @@ app.post("/api/v1/projects/:projectId/topic-library/extract", authApiKey, async 
 
     res.json(ok({
       content: transcript,
+      content_source: transcript ? "transcript" : null,
+      fallback_content: fallbackContent || null,
       platform,
       source_link: link,
       resolved_video_url: parsed.videoUrl,

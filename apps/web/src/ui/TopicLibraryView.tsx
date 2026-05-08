@@ -718,11 +718,25 @@ function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
     setExtracting(true);
     try {
       const data: any = await apiPost(`/api/v1/projects/${activeAccountId}/topic-library/extract`, { link: topic.ref_link, platform: topic.ref_platform }, "demo-key");
-      if (data?.content) {
-        setContent(data.content);
-        onUpdate(topic.id, 'ref_content', data.content);
+      const transcriptContent = typeof data?.content === "string" ? data.content.trim() : "";
+      const isTitleDescFallback = data?.extract_fallback?.source === "title_desc_fallback";
+      const fallbackContent = typeof data?.fallback_content === "string" && data.fallback_content.trim()
+        ? data.fallback_content.trim()
+        : (isTitleDescFallback ? transcriptContent : "");
+
+      if (transcriptContent && !isTitleDescFallback) {
+        setContent(transcriptContent);
+        onUpdate(topic.id, 'ref_content', transcriptContent);
+      } else if (fallbackContent) {
+        const useFallback = window.confirm(
+          "这次没提取到视频口播文案，当前拿到的是标题/正文简介，不会自动覆盖。\n\n点击“确定”可暂时填入参考文案；点击“取消”保留当前内容。"
+        );
+        if (useFallback) {
+          setContent(fallbackContent);
+          onUpdate(topic.id, 'ref_content', fallbackContent);
+        }
       } else {
-        alert("提取失败");
+        alert("提取失败：没有拿到可用的视频文案");
       }
     } catch (e: any) {
       alert("提取异常: " + e.message);
