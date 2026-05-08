@@ -9,7 +9,9 @@ const GPTS_MODEL_ALIASES = {
   "gpts-gemini-3.1-pro-preview": "gemini-3.1-pro-preview"
 };
 
-const GPTS_MESSAGES_MODELS = new Set([]);
+const GPTS_MESSAGES_MODELS = new Set([
+  "claude-sonnet-4-6-thinking"
+]);
 
 function isNativeGeminiModel(modelName) {
   return modelName === "gemini-3.1-flash-lite-preview" || modelName === "gemini-3.1-pro-preview";
