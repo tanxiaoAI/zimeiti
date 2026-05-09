@@ -116,6 +116,22 @@ const VOLC_ASR_API_KEY = process.env.VOLC_ASR_API_KEY;
 const VOLC_APP_ID = process.env.VOLC_APP_ID;
 const VOLC_ACCESS_TOKEN = process.env.VOLC_ACCESS_TOKEN;
 const VOLC_ASR_RESOURCE_ID = process.env.VOLC_ASR_RESOURCE_ID || "volc.seedasr.auc";
+const MEDIA_PUBLIC_BASE_URL = process.env.MEDIA_PUBLIC_BASE_URL;
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 20000, timeoutLabel = "请求超时") {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`${timeoutLabel}(${timeoutMs}ms)`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function extractXiaohongshuNoteId(link) {
   const patterns = [
@@ -133,14 +149,15 @@ function extractXiaohongshuNoteId(link) {
 
 async function callGetOneApi(endpoint, body) {
   const apiKey = GETONE_API_KEY || getRequiredEnv("GETONE_API_KEY");
-  const response = await fetch(`${GETONE_API_BASE_URL}${endpoint}`, {
+  const timeoutMs = Number(process.env.GETONE_TIMEOUT_MS || 20000);
+  const response = await fetchWithTimeout(`${GETONE_API_BASE_URL}${endpoint}`, {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${apiKey}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify(body)
-  });
+  }, timeoutMs, "GetOneAPI 请求超时");
 
   const result = await response.json();
   if (result?.code !== 200) {
@@ -164,7 +181,8 @@ function pickXiaohongshuVideoUrl(getOneData) {
   return {
     videoUrl: preferred.master_url,
     noteTitle: note?.title || "",
-    noteDesc: note?.desc || ""
+    noteDesc: note?.desc || "",
+    videoSource: "note.video_info_v2.media.stream"
   };
 }
 
@@ -228,7 +246,8 @@ function pickDouyinVideoUrl(getOneData) {
     return {
       videoUrl: preferredUrls[0],
       noteTitle: aweme?.desc || aweme?.title || "",
-      noteDesc: aweme?.desc || ""
+      noteDesc: aweme?.desc || "",
+      videoSource: "aweme.video.preferred_url_list"
     };
   }
 
@@ -243,7 +262,8 @@ function pickDouyinVideoUrl(getOneData) {
   return {
     videoUrl: candidates[0].url,
     noteTitle: aweme?.desc || aweme?.title || "",
-    noteDesc: aweme?.desc || ""
+    noteDesc: aweme?.desc || "",
+    videoSource: candidates[0].path
   };
 }
 
@@ -256,7 +276,13 @@ async function resolveVideoUrlByPlatform(link, platform) {
     const getOneData = await callGetOneApi("/api/xiaohongshu/fetch_video_detail_v6", { noteId });
     return {
       ...pickXiaohongshuVideoUrl(getOneData),
-      parser: "getoneapi:xiaohongshu/fetch_video_detail_v6"
+      parser: "getoneapi:xiaohongshu/fetch_video_detail_v6",
+      parserDebug: {
+        ok: true,
+        stage: "getone",
+        endpoint: "/api/xiaohongshu/fetch_video_detail_v6",
+        noteId
+      }
     };
   }
 
@@ -266,7 +292,13 @@ async function resolveVideoUrlByPlatform(link, platform) {
     const getOneData = await callGetOneApi("/api/douyin/fetch_video_detail", { share_text: link, aweme_id: awemeId });
     return {
       ...pickDouyinVideoUrl(getOneData),
-      parser: "getoneapi:douyin/fetch_video_detail"
+      parser: "getoneapi:douyin/fetch_video_detail",
+      parserDebug: {
+        ok: true,
+        stage: "getone",
+        endpoint: "/api/douyin/fetch_video_detail",
+        awemeId: awemeId || null
+      }
     };
   }
 
@@ -300,8 +332,8 @@ function inferMediaExtension(mediaUrl, contentType = "") {
   return ".bin";
 }
 
-function getPublicBaseUrl(req) {
-  const configuredBaseUrl = String(process.env.PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "");
+function buildBaseUrl(req, envName = "PUBLIC_BASE_URL") {
+  const configuredBaseUrl = String(process.env[envName] || "").trim().replace(/\/+$/, "");
   if (configuredBaseUrl) {
     return configuredBaseUrl;
   }
@@ -309,6 +341,14 @@ function getPublicBaseUrl(req) {
   const forwardedProto = String(req.get("x-forwarded-proto") || "").split(",")[0].trim();
   const protocol = forwardedProto || (req.protocol === "http" && host.includes("zeabur.app") ? "https" : req.protocol);
   return `${protocol}://${host}`;
+}
+
+function getPublicBaseUrl(req) {
+  return buildBaseUrl(req, "PUBLIC_BASE_URL");
+}
+
+function getMediaPublicBaseUrl(req) {
+  return buildBaseUrl(req, "MEDIA_PUBLIC_BASE_URL");
 }
 
 function buildRemoteMediaHeaderCandidates(remoteUrl) {
@@ -345,13 +385,8 @@ async function fetchRemoteMediaForMirror(remoteUrl) {
   const errors = [];
 
   for (const headers of buildRemoteMediaHeaderCandidates(remoteUrl)) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await fetch(remoteUrl, {
-        headers,
-        signal: controller.signal
-      });
+      const response = await fetchWithTimeout(remoteUrl, { headers }, timeoutMs, "视频远程下载超时");
 
       if (!response.ok || !response.body) {
         errors.push(`status=${response.status || "unknown"} headers=${headers.Referer || "default"}`);
@@ -364,8 +399,6 @@ async function fetchRemoteMediaForMirror(remoteUrl) {
         ? `timeout(${timeoutMs}ms) headers=${headers.Referer || "default"}`
         : `${error.message} headers=${headers.Referer || "default"}`;
       errors.push(message);
-    } finally {
-      clearTimeout(timer);
     }
   }
 
@@ -382,7 +415,12 @@ async function mirrorRemoteMediaToPublicUrl(remoteUrl, req, prefix = "topic_medi
 
   await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(localPath));
 
-  return `${getPublicBaseUrl(req)}/static/uploads/${filename}`;
+  return {
+    publicUrl: `${getMediaPublicBaseUrl(req)}/static/uploads/${filename}`,
+    localPath,
+    filename,
+    contentType: response.headers.get("content-type") || ""
+  };
 }
 
 function getVolcAsrAuthHeaders() {
@@ -404,7 +442,8 @@ function getVolcAsrAuthHeaders() {
 async function submitVolcAsrTask(mediaUrl) {
   const requestId = randomUUID();
   const format = guessAsrFormatFromUrl(mediaUrl);
-  const response = await fetch("https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit", {
+  const timeoutMs = Number(process.env.VOLC_ASR_TIMEOUT_MS || 20000);
+  const response = await fetchWithTimeout("https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -431,7 +470,7 @@ async function submitVolcAsrTask(mediaUrl) {
         sensitive_words_filter: ""
       }
     })
-  });
+  }, timeoutMs, "火山 ASR submit 超时");
 
   const statusCode = response.headers.get("X-Api-Status-Code");
   const statusMessage = response.headers.get("X-Api-Message");
@@ -439,11 +478,12 @@ async function submitVolcAsrTask(mediaUrl) {
     throw new Error(`火山语音提交失败(${statusCode || "unknown"}): ${statusMessage || "unknown error"}`);
   }
 
-  return requestId;
+  return { requestId, statusCode, statusMessage, format };
 }
 
 async function queryVolcAsrTask(requestId) {
-  const response = await fetch("https://openspeech.bytedance.com/api/v3/auc/bigmodel/query", {
+  const timeoutMs = Number(process.env.VOLC_ASR_TIMEOUT_MS || 20000);
+  const response = await fetchWithTimeout("https://openspeech.bytedance.com/api/v3/auc/bigmodel/query", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -452,7 +492,7 @@ async function queryVolcAsrTask(requestId) {
       ...getVolcAsrAuthHeaders()
     },
     body: JSON.stringify({})
-  });
+  }, timeoutMs, "火山 ASR query 超时");
 
   const statusCode = response.headers.get("X-Api-Status-Code");
   const statusMessage = response.headers.get("X-Api-Message");
@@ -473,46 +513,124 @@ function buildTopicExtractFallbackContent(parsed) {
   return Array.from(new Set(parts)).join("\n\n").trim();
 }
 
-async function transcribeMediaByVolc(mediaUrl) {
-  const requestId = await submitVolcAsrTask(mediaUrl);
+function formatExtractDebugSummary(debug) {
+  const parserStatus = debug?.parser?.ok ? "成功" : `失败(${debug?.parser?.error || "unknown"})`;
+  const mirrorStatus = debug?.mirror?.ok ? "成功" : `失败(${debug?.mirror?.error || "unknown"})`;
+  const asrStatus = debug?.asr?.ok ? "成功" : `失败(${debug?.asr?.error || debug?.asr?.finalStatusMessage || "unknown"})`;
+  return [
+    `1. GetOne解析: ${parserStatus}`,
+    `2. 视频镜像到服务器: ${mirrorStatus}`,
+    `3. 火山ASR: ${asrStatus}`
+  ].join("；");
+}
 
-  for (let i = 0; i < 20; i += 1) {
-    await new Promise(resolve => setTimeout(resolve, 3000));
-    const { statusCode, statusMessage, data } = await queryVolcAsrTask(requestId);
+async function transcribeMediaByVolc(mediaUrl) {
+  const submitInfo = await submitVolcAsrTask(mediaUrl);
+  const debug = {
+    ok: false,
+    stage: "volc_asr",
+    mediaUrl,
+    format: submitInfo.format,
+    requestId: submitInfo.requestId,
+    submitStatusCode: submitInfo.statusCode,
+    submitStatusMessage: submitInfo.statusMessage,
+    queryHistory: []
+  };
+  const maxPolls = Number(process.env.VOLC_ASR_MAX_POLLS || 10);
+  const pollIntervalMs = Number(process.env.VOLC_ASR_POLL_INTERVAL_MS || 3000);
+
+  for (let i = 0; i < maxPolls; i += 1) {
+    await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+    const { statusCode, statusMessage, data } = await queryVolcAsrTask(submitInfo.requestId);
+    debug.queryHistory.push({
+      index: i,
+      statusCode,
+      statusMessage,
+      resultPreview: buildPreviewText(data?.result?.text || "", 120)
+    });
 
     if (statusCode === "20000000") {
       const text = data?.result?.text?.trim();
       if (!text) {
-        throw new Error("火山语音已完成，但未返回可用文本");
+        const error = new Error("火山语音已完成，但未返回可用文本");
+        error.stepDebug = debug;
+        throw error;
       }
-      return text;
+      return {
+        text,
+        debug: {
+          ...debug,
+          ok: true,
+          finalStatusCode: statusCode,
+          finalStatusMessage: statusMessage
+        }
+      };
     }
 
     if (statusCode === "20000001" || statusCode === "20000002") {
       continue;
     }
 
-    throw new Error(`火山语音识别失败(${statusCode || "unknown"}): ${statusMessage || "unknown error"}`);
+    const error = new Error(`火山语音识别失败(${statusCode || "unknown"}): ${statusMessage || "unknown error"}`);
+    error.stepDebug = {
+      ...debug,
+      finalStatusCode: statusCode,
+      finalStatusMessage: statusMessage
+    };
+    throw error;
   }
 
-  throw new Error("火山语音识别超时，请稍后重试");
+  const lastQuery = debug.queryHistory[debug.queryHistory.length - 1] || null;
+  const error = new Error(`火山语音识别超时，最后状态=${lastQuery?.statusCode || "unknown"} ${lastQuery?.statusMessage || ""}`.trim());
+  error.stepDebug = {
+    ...debug,
+    finalStatusCode: lastQuery?.statusCode || null,
+    finalStatusMessage: lastQuery?.statusMessage || null
+  };
+  throw error;
 }
 
 async function transcribeMediaWithFallback(mediaUrls) {
   const errors = [];
+  const attempts = [];
 
   for (const mediaUrl of mediaUrls.filter(Boolean)) {
     try {
-      return await transcribeMediaByVolc(mediaUrl);
+      const result = await transcribeMediaByVolc(mediaUrl);
+      return {
+        text: result.text,
+        debug: {
+          ok: true,
+          stage: "volc_asr",
+          attempts: [...attempts, result.debug]
+        }
+      };
     } catch (error) {
       errors.push(`${mediaUrl} -> ${error.message}`);
+      attempts.push(error.stepDebug || {
+        ok: false,
+        stage: "volc_asr",
+        mediaUrl,
+        error: error.message
+      });
       if (!isVolcUriError(error.message)) {
+        error.stepDebug = {
+          ok: false,
+          stage: "volc_asr",
+          attempts
+        };
         throw error;
       }
     }
   }
 
-  throw new Error(errors[errors.length - 1] || "未找到可用的语音识别地址");
+  const error = new Error(errors[errors.length - 1] || "未找到可用的语音识别地址");
+  error.stepDebug = {
+    ok: false,
+    stage: "volc_asr",
+    attempts
+  };
+  throw error;
 }
 
 async function handleProjectChat(req, res, chatType, options = {}) {
@@ -1184,21 +1302,58 @@ app.post("/api/v1/projects/:projectId/topic-library/extract", authApiKey, async 
   }
   
   try {
+    const extractDebug = {
+      parser: { ok: false, stage: "getone", error: "未开始" },
+      mirror: { ok: false, stage: "mirror", error: "未开始" },
+      asr: { ok: false, stage: "volc_asr", error: "未开始" }
+    };
     const parsed = await resolveVideoUrlByPlatform(link, platform);
+    extractDebug.parser = {
+      ...(parsed.parserDebug || {}),
+      ok: true,
+      parser: parsed.parser,
+      videoSource: parsed.videoSource || null,
+      resolvedVideoUrl: parsed.videoUrl
+    };
+
     let mirroredMediaUrl = null;
     try {
-      mirroredMediaUrl = await mirrorRemoteMediaToPublicUrl(parsed.videoUrl, req, "topic_extract");
+      const mirrorResult = await mirrorRemoteMediaToPublicUrl(parsed.videoUrl, req, "topic_extract");
+      mirroredMediaUrl = mirrorResult.publicUrl;
+      extractDebug.mirror = {
+        ok: true,
+        stage: "mirror",
+        remoteUrl: parsed.videoUrl,
+        mirroredMediaUrl,
+        localPath: mirrorResult.localPath,
+        filename: mirrorResult.filename,
+        contentType: mirrorResult.contentType
+      };
     } catch (mirrorError) {
       console.warn("topic-library extract mirror failed:", mirrorError.message);
+      extractDebug.mirror = {
+        ok: false,
+        stage: "mirror",
+        remoteUrl: parsed.videoUrl,
+        error: mirrorError.message
+      };
     }
     let transcript = "";
     let fallbackContent = "";
     let extractFallback = null;
     try {
-      transcript = await transcribeMediaWithFallback([mirroredMediaUrl, parsed.videoUrl]);
+      const transcribeResult = await transcribeMediaWithFallback([mirroredMediaUrl, parsed.videoUrl]);
+      transcript = transcribeResult.text;
+      extractDebug.asr = transcribeResult.debug;
     } catch (transcribeError) {
+      extractDebug.asr = {
+        ...(transcribeError.stepDebug || {}),
+        ok: false,
+        error: transcribeError.message
+      };
       fallbackContent = buildTopicExtractFallbackContent(parsed);
       if (!fallbackContent) {
+        transcribeError.extractDebug = extractDebug;
         throw transcribeError;
       }
       extractFallback = {
@@ -1216,13 +1371,19 @@ app.post("/api/v1/projects/:projectId/topic-library/extract", authApiKey, async 
       resolved_video_url: parsed.videoUrl,
       mirrored_media_url: mirroredMediaUrl,
       extract_fallback: extractFallback,
+      extract_debug: extractDebug,
       parser: parsed.parser,
       note_title: parsed.noteTitle,
       note_desc: parsed.noteDesc
     }, request_id));
   } catch (e) {
     console.error(e);
-    res.status(500).json(fail({ code: ErrorCodes.INTERNAL_ERROR, message: "提取失败：" + e.message }, request_id));
+    const parserErrorMessage = `提取失败：${e.message}${e.extractDebug ? `；${formatExtractDebugSummary(e.extractDebug)}` : ""}`;
+    res.status(500).json(fail({
+      code: ErrorCodes.INTERNAL_ERROR,
+      message: parserErrorMessage,
+      details: e.extractDebug ? { extract_debug: e.extractDebug } : undefined
+    }, request_id));
   }
 });
 

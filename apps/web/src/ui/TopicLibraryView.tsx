@@ -171,6 +171,20 @@ function parseStoredTopicAnalysisResult(fallbackModel: string, value: string | n
   return { model: fallbackModel, result: text, error: null } as TopicAiResultEntry;
 }
 
+function buildExtractDebugText(debug: any) {
+  if (!debug) return "";
+  const parserLine = debug?.parser?.ok
+    ? `1. GetOne解析成功${debug?.parser?.parser ? `：${debug.parser.parser}` : ""}`
+    : `1. GetOne解析失败：${debug?.parser?.error || "未知错误"}`;
+  const mirrorLine = debug?.mirror?.ok
+    ? `2. 视频已下载到服务器：${debug?.mirror?.mirroredMediaUrl || "已生成镜像地址"}`
+    : `2. 视频未下载到服务器：${debug?.mirror?.error || "未知错误"}`;
+  const asrLine = debug?.asr?.ok
+    ? "3. 火山ASR解析成功"
+    : `3. 火山ASR解析失败：${debug?.asr?.error || debug?.asr?.finalStatusMessage || "未知错误"}`;
+  return [parserLine, mirrorLine, asrLine].join("\n");
+}
+
 function stringifyTopicAnalysisResult(entry: TopicAiResultEntry | undefined) {
   if (!entry) return "";
   return JSON.stringify({
@@ -861,6 +875,7 @@ function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
     try {
       const data: any = await apiPost(`/api/v1/projects/${activeAccountId}/topic-library/extract`, { link: topic.ref_link, platform: topic.ref_platform }, "demo-key");
       const transcriptContent = typeof data?.content === "string" ? data.content.trim() : "";
+      const debugText = buildExtractDebugText(data?.extract_debug);
       const isTitleDescFallback = data?.extract_fallback?.source === "title_desc_fallback";
       const fallbackContent = typeof data?.fallback_content === "string" && data.fallback_content.trim()
         ? data.fallback_content.trim()
@@ -871,14 +886,14 @@ function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
         onUpdate(topic.id, 'ref_content', transcriptContent);
       } else if (fallbackContent) {
         const useFallback = window.confirm(
-          "这次没提取到视频口播文案，当前拿到的是标题/正文简介，不会自动覆盖。\n\n点击“确定”可暂时填入参考文案；点击“取消”保留当前内容。"
+          `这次没提取到视频口播文案，当前拿到的是标题/正文简介，不会自动覆盖。\n\n${debugText ? `${debugText}\n\n` : ""}点击“确定”可暂时填入参考文案；点击“取消”保留当前内容。`
         );
         if (useFallback) {
           setContent(fallbackContent);
           onUpdate(topic.id, 'ref_content', fallbackContent);
         }
       } else {
-        alert("提取失败：没有拿到可用的视频文案");
+        alert(`提取失败：没有拿到可用的视频文案${debugText ? `\n\n${debugText}` : ""}`);
       }
     } catch (e: any) {
       alert("提取异常: " + e.message);
