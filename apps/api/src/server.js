@@ -309,16 +309,69 @@ function getPublicBaseUrl(req) {
   return `${protocol}://${host}`;
 }
 
-async function mirrorRemoteMediaToPublicUrl(remoteUrl, req, prefix = "topic_media") {
-  const response = await fetch(remoteUrl, {
-    headers: {
-      "User-Agent": "Mozilla/5.0"
-    }
-  });
+function buildRemoteMediaHeaderCandidates(remoteUrl) {
+  const baseHeaders = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+    "Accept": "*/*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache"
+  };
+  const rawUrl = String(remoteUrl || "").toLowerCase();
 
-  if (!response.ok || !response.body) {
-    throw new Error(`媒体文件下载失败(${response.status}): 无法获取可用内容`);
+  if (/douyinvod\.com|douyin\.com/.test(rawUrl)) {
+    return [
+      {
+        ...baseHeaders,
+        "Referer": "https://www.douyin.com/",
+        "Origin": "https://www.douyin.com"
+      },
+      {
+        ...baseHeaders,
+        "Referer": "https://www.iesdouyin.com/",
+        "Origin": "https://www.iesdouyin.com"
+      },
+      baseHeaders
+    ];
   }
+
+  return [baseHeaders];
+}
+
+async function fetchRemoteMediaForMirror(remoteUrl) {
+  const timeoutMs = Number(process.env.MEDIA_FETCH_TIMEOUT_MS || 20000);
+  const errors = [];
+
+  for (const headers of buildRemoteMediaHeaderCandidates(remoteUrl)) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(remoteUrl, {
+        headers,
+        signal: controller.signal
+      });
+
+      if (!response.ok || !response.body) {
+        errors.push(`status=${response.status || "unknown"} headers=${headers.Referer || "default"}`);
+        continue;
+      }
+
+      return response;
+    } catch (error) {
+      const message = error?.name === "AbortError"
+        ? `timeout(${timeoutMs}ms) headers=${headers.Referer || "default"}`
+        : `${error.message} headers=${headers.Referer || "default"}`;
+      errors.push(message);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  throw new Error(`媒体文件下载失败: ${errors.join(" | ") || "unknown error"}`);
+}
+
+async function mirrorRemoteMediaToPublicUrl(remoteUrl, req, prefix = "topic_media") {
+  const response = await fetchRemoteMediaForMirror(remoteUrl);
 
   if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
   const ext = inferMediaExtension(remoteUrl, response.headers.get("content-type"));
@@ -1126,7 +1179,7 @@ app.post("/api/v1/projects/:projectId/topic-library/extract", authApiKey, async 
     let fallbackContent = "";
     let extractFallback = null;
     try {
-      transcript = await transcribeMediaWithFallback([parsed.videoUrl, mirroredMediaUrl]);
+      transcript = await transcribeMediaWithFallback([mirroredMediaUrl, parsed.videoUrl]);
     } catch (transcribeError) {
       fallbackContent = buildTopicExtractFallbackContent(parsed);
       if (!fallbackContent) {
