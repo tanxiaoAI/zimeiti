@@ -260,7 +260,8 @@ function pickXiaohongshuVideoUrl(getOneData) {
     videoUrl: preferred.master_url,
     noteTitle: note?.title || "",
     noteDesc: note?.desc || "",
-    videoSource: "note.video_info_v2.media.stream"
+    videoSource: "note.video_info_v2.media.stream",
+    durationMs: Number(note?.video_info_v2?.media?.duration || 0) || null
   };
 }
 
@@ -358,7 +359,8 @@ function pickDouyinVideoUrl(getOneData) {
       candidateVideoUrls: preferredCandidates.map((item) => item.url),
       noteTitle: aweme?.desc || aweme?.title || "",
       noteDesc: aweme?.desc || "",
-      videoSource: preferredCandidates[0].source
+      videoSource: preferredCandidates[0].source,
+      durationMs: Number(aweme?.video?.duration || aweme?.duration || 0) || null
     };
   }
 
@@ -375,7 +377,8 @@ function pickDouyinVideoUrl(getOneData) {
     candidateVideoUrls: dedupeUrls(candidates.map((item) => item.url)),
     noteTitle: aweme?.desc || aweme?.title || "",
     noteDesc: aweme?.desc || "",
-    videoSource: candidates[0].path
+    videoSource: candidates[0].path,
+    durationMs: Number(aweme?.video?.duration || aweme?.duration || 0) || null
   };
 }
 
@@ -748,8 +751,28 @@ function formatExtractDebugSummary(debug) {
   ].join("；");
 }
 
-async function transcribeMediaByVolc(mediaUrl) {
+function resolveVolcPollingConfig(durationMs) {
+  const pollIntervalMs = Number(process.env.VOLC_ASR_POLL_INTERVAL_MS || 3000);
+  const configuredMaxPolls = Number(process.env.VOLC_ASR_MAX_POLLS || 10);
+  const configuredMaxWaitMs = Number(process.env.VOLC_ASR_MAX_WAIT_MS || 0);
+  const safeDurationMs = Number(durationMs || 0);
+  const durationBasedWaitMs = safeDurationMs > 0
+    ? Math.min(Math.max(Math.ceil(safeDurationMs * 1.5), 60000), 300000)
+    : configuredMaxPolls * pollIntervalMs;
+  const maxWaitMs = Math.max(configuredMaxWaitMs, configuredMaxPolls * pollIntervalMs, durationBasedWaitMs);
+  const maxPolls = Math.max(configuredMaxPolls, Math.ceil(maxWaitMs / pollIntervalMs));
+
+  return {
+    durationMs: safeDurationMs || null,
+    pollIntervalMs,
+    maxWaitMs,
+    maxPolls
+  };
+}
+
+async function transcribeMediaByVolc(mediaUrl, options = {}) {
   const submitInfo = await submitVolcAsrTask(mediaUrl);
+  const pollingConfig = resolveVolcPollingConfig(options.durationMs);
   const debug = {
     ok: false,
     stage: "volc_asr",
@@ -758,13 +781,15 @@ async function transcribeMediaByVolc(mediaUrl) {
     requestId: submitInfo.requestId,
     submitStatusCode: submitInfo.statusCode,
     submitStatusMessage: submitInfo.statusMessage,
+    durationMs: pollingConfig.durationMs,
+    pollIntervalMs: pollingConfig.pollIntervalMs,
+    maxWaitMs: pollingConfig.maxWaitMs,
+    maxPolls: pollingConfig.maxPolls,
     queryHistory: []
   };
-  const maxPolls = Number(process.env.VOLC_ASR_MAX_POLLS || 10);
-  const pollIntervalMs = Number(process.env.VOLC_ASR_POLL_INTERVAL_MS || 3000);
 
-  for (let i = 0; i < maxPolls; i += 1) {
-    await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+  for (let i = 0; i < pollingConfig.maxPolls; i += 1) {
+    await new Promise(resolve => setTimeout(resolve, pollingConfig.pollIntervalMs));
     const { statusCode, statusMessage, data } = await queryVolcAsrTask(submitInfo.requestId);
     debug.queryHistory.push({
       index: i,
@@ -805,7 +830,8 @@ async function transcribeMediaByVolc(mediaUrl) {
   }
 
   const lastQuery = debug.queryHistory[debug.queryHistory.length - 1] || null;
-  const error = new Error(`火山语音识别超时，最后状态=${lastQuery?.statusCode || "unknown"} ${lastQuery?.statusMessage || ""}`.trim());
+  const waitedSeconds = Math.round((debug.queryHistory.length * pollingConfig.pollIntervalMs) / 1000);
+  const error = new Error(`火山语音识别超时(已等待${waitedSeconds}秒)，最后状态=${lastQuery?.statusCode || "unknown"} ${lastQuery?.statusMessage || ""}`.trim());
   error.stepDebug = {
     ...debug,
     finalStatusCode: lastQuery?.statusCode || null,
@@ -814,13 +840,13 @@ async function transcribeMediaByVolc(mediaUrl) {
   throw error;
 }
 
-async function transcribeMediaWithFallback(mediaUrls) {
+async function transcribeMediaWithFallback(mediaUrls, options = {}) {
   const errors = [];
   const attempts = [];
 
   for (const mediaUrl of mediaUrls.filter(Boolean)) {
     try {
-      const result = await transcribeMediaByVolc(mediaUrl);
+      const result = await transcribeMediaByVolc(mediaUrl, options);
       return {
         text: result.text,
         debug: {
@@ -1539,7 +1565,8 @@ app.post("/api/v1/projects/:projectId/topic-library/extract", authApiKey, async 
       parser: parsed.parser,
       videoSource: parsed.videoSource || null,
       resolvedVideoUrl: parsed.videoUrl,
-      candidateVideoUrls: resolvedMediaUrls
+      candidateVideoUrls: resolvedMediaUrls,
+      durationMs: parsed.durationMs || null
     };
 
     let mirroredMediaUrl = null;
@@ -1645,7 +1672,9 @@ app.post("/api/v1/projects/:projectId/topic-library/extract", authApiKey, async 
         mirroredAudioUrl,
         mirroredMediaUrl,
         ...resolvedMediaUrls
-      ]);
+      ], {
+        durationMs: parsed.durationMs
+      });
       transcript = transcribeResult.text;
       extractDebug.asr = transcribeResult.debug;
     } catch (transcribeError) {
