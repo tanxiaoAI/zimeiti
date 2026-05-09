@@ -113,6 +113,8 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500
 const GETONE_API_BASE_URL = (process.env.GETONE_API_BASE_URL || "https://api.getoneapi.com").replace(/\/$/, "");
 const GETONE_API_KEY = process.env.GETONE_API_KEY;
 const VOLC_ASR_API_KEY = process.env.VOLC_ASR_API_KEY;
+const VOLC_APP_ID = process.env.VOLC_APP_ID;
+const VOLC_ACCESS_TOKEN = process.env.VOLC_ACCESS_TOKEN;
 const VOLC_ASR_RESOURCE_ID = process.env.VOLC_ASR_RESOURCE_ID || "volc.seedasr.auc";
 
 function extractXiaohongshuNoteId(link) {
@@ -383,18 +385,33 @@ async function mirrorRemoteMediaToPublicUrl(remoteUrl, req, prefix = "topic_medi
   return `${getPublicBaseUrl(req)}/static/uploads/${filename}`;
 }
 
+function getVolcAsrAuthHeaders() {
+  const appId = String(VOLC_APP_ID || "").trim();
+  const accessToken = String(VOLC_ACCESS_TOKEN || "").trim();
+  if (appId && accessToken) {
+    return {
+      "X-Api-App-Id": appId,
+      "X-Api-Access-Key": accessToken
+    };
+  }
+
+  const volcAsrApiKey = String(VOLC_ASR_API_KEY || "").trim() || getRequiredEnv("VOLC_ASR_API_KEY");
+  return {
+    "X-Api-Key": volcAsrApiKey
+  };
+}
+
 async function submitVolcAsrTask(mediaUrl) {
-  const volcAsrApiKey = VOLC_ASR_API_KEY || getRequiredEnv("VOLC_ASR_API_KEY");
   const requestId = randomUUID();
   const format = guessAsrFormatFromUrl(mediaUrl);
   const response = await fetch("https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Api-Key": volcAsrApiKey,
       "X-Api-Resource-Id": VOLC_ASR_RESOURCE_ID,
       "X-Api-Request-Id": requestId,
-      "X-Api-Sequence": "-1"
+      "X-Api-Sequence": "-1",
+      ...getVolcAsrAuthHeaders()
     },
     body: JSON.stringify({
       user: { uid: "ai-media-topic-library" },
@@ -426,14 +443,13 @@ async function submitVolcAsrTask(mediaUrl) {
 }
 
 async function queryVolcAsrTask(requestId) {
-  const volcAsrApiKey = VOLC_ASR_API_KEY || getRequiredEnv("VOLC_ASR_API_KEY");
   const response = await fetch("https://openspeech.bytedance.com/api/v3/auc/bigmodel/query", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Api-Key": volcAsrApiKey,
       "X-Api-Resource-Id": VOLC_ASR_RESOURCE_ID,
-      "X-Api-Request-Id": requestId
+      "X-Api-Request-Id": requestId,
+      ...getVolcAsrAuthHeaders()
     },
     body: JSON.stringify({})
   });
