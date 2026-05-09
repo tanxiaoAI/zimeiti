@@ -804,6 +804,7 @@ textarea.input-field {
 }
 
 .topic-library-table .sticky-col-left,
+.topic-library-table .sticky-drag-col,
 .topic-library-table .sticky-col-right {
   position: sticky;
   z-index: 2;
@@ -811,19 +812,85 @@ textarea.input-field {
 }
 
 .topic-library-table thead .sticky-col-left,
+.topic-library-table thead .sticky-drag-col,
 .topic-library-table thead .sticky-col-right {
   z-index: 4;
   background: var(--bg-hover);
 }
 
-.topic-library-table .sticky-col-left {
+.topic-library-table .sticky-drag-col {
   left: 0;
+  box-shadow: 1px 0 0 0 var(--border-light);
+}
+
+.topic-library-table .sticky-col-left {
+  left: 34px;
   box-shadow: 1px 0 0 0 var(--border-light);
 }
 
 .topic-library-table .sticky-col-right {
   right: 0;
   box-shadow: -1px 0 0 0 var(--border-light);
+}
+
+.topic-library-row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.topic-library-drag-head,
+.topic-library-drag-cell {
+  width: 34px;
+  min-width: 34px;
+  padding: 0 4px !important;
+  text-align: center;
+}
+
+.topic-library-drag-cell {
+  background: var(--bg-card);
+}
+
+.topic-library-drag-handle {
+  width: 20px;
+  height: 28px;
+  display: inline-grid;
+  grid-template-columns: repeat(2, 4px);
+  grid-template-rows: repeat(3, 4px);
+  gap: 3px 4px;
+  align-content: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  cursor: grab;
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+
+.topic-library-drag-handle:hover {
+  background: rgba(148, 163, 184, 0.12);
+}
+
+.topic-library-drag-handle:active,
+.topic-library-drag-handle.is-dragging {
+  cursor: grabbing;
+  background: rgba(59, 130, 246, 0.12);
+}
+
+.topic-library-drag-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: #94a3b8;
+}
+
+.topic-library-row-dragging {
+  opacity: 0.72;
+}
+
+.topic-library-row-drop-target td {
+  background: rgba(59, 130, 246, 0.06);
 }
 
 .topic-library-input {

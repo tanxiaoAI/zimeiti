@@ -21,6 +21,7 @@ const MODEL_OPTIONS = [
 
 const TOPIC_LIBRARY_PROMPT_FALLBACK = "你是一个资深自媒体内容分析师，请对提供的文案进行深度拆解分析。";
 const TOPIC_LIBRARY_DEFAULT_MODELS = ["gpt-5.5", "claude-opus-4-6", "gpts-gemini-3.1-pro-preview"];
+const ANALYSIS_RESULT_FIELDS = ["ai_analysis_1", "ai_analysis_2", "ai_analysis_3"] as const;
 
 type TopicAnalysisLogItem = {
   id: string;
@@ -197,6 +198,27 @@ function stringifyTopicAnalysisResult(entry: TopicAiResultEntry | undefined) {
   });
 }
 
+function normalizeTopicModels(input: unknown) {
+  const fallback = [...TOPIC_LIBRARY_DEFAULT_MODELS];
+  if (!Array.isArray(input)) return fallback;
+  const next = input
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .slice(0, 3);
+  return next.length > 0 ? next : fallback;
+}
+
+function getNextTopicModel(currentModels: string[]) {
+  return MODEL_OPTIONS.find((option) => !currentModels.includes(option)) || MODEL_OPTIONS[0];
+}
+
+function buildStoredAnalysisResults(topic: any, targetModels: string[]) {
+  return ANALYSIS_RESULT_FIELDS.map((field, index) => {
+    const fallbackModel = targetModels[index] || targetModels[targetModels.length - 1] || TOPIC_LIBRARY_DEFAULT_MODELS[0];
+    return parseStoredTopicAnalysisResult(fallbackModel, topic?.[field]);
+  }).filter(Boolean) as TopicAiResultEntry[];
+}
+
 function EditableInput({ value, onChange, placeholder, style, className }: any) {
   const [localValue, setLocalValue] = useState(value || "");
   
@@ -331,7 +353,7 @@ function ExpandableTextCell({
   );
 }
 
-export function TopicLibraryView({ activeAccountId }: { activeAccountId: string }) {
+export function TopicLibraryView({ activeAccountId, onEnterProduction }: { activeAccountId: string; onEnterProduction?: (topic: any) => void }) {
   const [topics, setTopics] = useState<any[]>([]);
   const [options, setOptions] = useState<{ judgment_result: any[], source: any[] }>({ judgment_result: [], source: [] });
   const [optionModal, setOptionModal] = useState<string | null>(null);
@@ -348,6 +370,10 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
   const [topicPromptDraft, setTopicPromptDraft] = useState(TOPIC_LIBRARY_PROMPT_FALLBACK);
   const [topicPrompt, setTopicPrompt] = useState(TOPIC_LIBRARY_PROMPT_FALLBACK);
   const [topicModels, setTopicModels] = useState<string[]>(TOPIC_LIBRARY_DEFAULT_MODELS);
+  const [draggingTopicId, setDraggingTopicId] = useState<string | null>(null);
+  const [dragOverTopicId, setDragOverTopicId] = useState<string | null>(null);
+  const dragStartTopicsRef = React.useRef<any[] | null>(null);
+  const dragDroppedRef = React.useRef(false);
 
   const fetchTopics = async () => {
     if (!activeAccountId) return;
@@ -364,6 +390,23 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
     setTopics(prev => prev.map(item => item.id === updated.id ? updated : item));
     setCopyDrawer(prev => (prev && prev.id === updated.id) ? updated : prev);
     setAiDrawer(prev => (prev && prev.id === updated.id) ? updated : prev);
+  };
+
+  const moveTopicItems = (items: any[], activeId: string, overId: string) => {
+    const activeIndex = items.findIndex((item) => item.id === activeId);
+    const overIndex = items.findIndex((item) => item.id === overId);
+    if (activeIndex === -1 || overIndex === -1 || activeIndex === overIndex) return items;
+    const next = [...items];
+    const [moved] = next.splice(activeIndex, 1);
+    next.splice(overIndex, 0, moved);
+    return next;
+  };
+
+  const resetTopicDragState = () => {
+    setDraggingTopicId(null);
+    setDragOverTopicId(null);
+    dragStartTopicsRef.current = null;
+    dragDroppedRef.current = false;
   };
 
   const fetchOptions = async (field: string) => {
@@ -386,13 +429,11 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
     if (!activeAccountId) return;
     const savedPrompt = readTopicLibraryConfig(activeAccountId, "prompt") || TOPIC_LIBRARY_PROMPT_FALLBACK;
     const savedModelsRaw = readTopicLibraryConfig(activeAccountId, "models");
-    let savedModels = TOPIC_LIBRARY_DEFAULT_MODELS;
+    let savedModels = [...TOPIC_LIBRARY_DEFAULT_MODELS];
     if (savedModelsRaw) {
       try {
         const parsed = JSON.parse(savedModelsRaw);
-        if (Array.isArray(parsed) && parsed.length === 3) {
-          savedModels = parsed;
-        }
+        savedModels = normalizeTopicModels(parsed);
       } catch (e) {
         // ignore invalid persisted config
       }
@@ -456,6 +497,51 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
     }
   };
 
+  const persistTopicLibraryOrder = async (nextTopics: any[], fallbackTopics: any[]) => {
+    setTopics(nextTopics);
+    try {
+      const data: any = await apiPost(`/api/v1/projects/${activeAccountId}/topic-library/reorder`, {
+        orderedIds: nextTopics.map((item) => item.id)
+      }, "demo-key");
+      setTopics(data.items || nextTopics);
+    } catch (e: any) {
+      console.error(e);
+      setTopics(fallbackTopics);
+      alert(`排序保存失败：${e?.message || "未知错误"}`);
+    }
+  };
+
+  const handleTopicDragStart = (event: React.DragEvent, topicId: string) => {
+    dragStartTopicsRef.current = topics;
+    dragDroppedRef.current = false;
+    setDraggingTopicId(topicId);
+    setDragOverTopicId(topicId);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", topicId);
+  };
+
+  const handleTopicDragEnter = (topicId: string) => {
+    if (!draggingTopicId || draggingTopicId === topicId) return;
+    setDragOverTopicId(topicId);
+    setTopics((prev) => moveTopicItems(prev, draggingTopicId, topicId));
+  };
+
+  const handleTopicDrop = async (topicId: string) => {
+    if (!draggingTopicId) return;
+    dragDroppedRef.current = true;
+    const fallbackTopics = dragStartTopicsRef.current || topics;
+    const nextTopics = moveTopicItems(topics, draggingTopicId, topicId);
+    await persistTopicLibraryOrder(nextTopics, fallbackTopics);
+    resetTopicDragState();
+  };
+
+  const handleTopicDragEnd = () => {
+    if (!dragDroppedRef.current && dragStartTopicsRef.current) {
+      setTopics(dragStartTopicsRef.current);
+    }
+    resetTopicDragState();
+  };
+
   const handleAddOption = async (field: string) => {
     if (!newOption.value.trim()) return;
     try {
@@ -493,16 +579,9 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
   };
 
   const persistTopicModels = (nextModels: string[]) => {
-    setTopicModels(nextModels);
-    writeTopicLibraryConfig(activeAccountId, "models", JSON.stringify(nextModels));
-  };
-
-  const buildStoredAnalysisResults = (topic: any, targetModels: string[]) => {
-    return [
-      parseStoredTopicAnalysisResult(targetModels[0], topic?.ai_analysis_1),
-      parseStoredTopicAnalysisResult(targetModels[1], topic?.ai_analysis_2),
-      parseStoredTopicAnalysisResult(targetModels[2], topic?.ai_analysis_3)
-    ].filter(Boolean) as TopicAiResultEntry[];
+    const normalized = normalizeTopicModels(nextModels);
+    setTopicModels(normalized);
+    writeTopicLibraryConfig(activeAccountId, "models", JSON.stringify(normalized));
   };
 
   const updateTopicAnalysisJob = (topicId: string, updater: (prev: TopicAnalysisJobState | undefined) => TopicAnalysisJobState) => {
@@ -638,6 +717,7 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
         <Table containerClassName="topic-library-table-scroll" className="topic-library-table">
           <TableHeader>
             <TableRow>
+              <TableHead className="topic-library-drag-head sticky-drag-col" style={{ width: 34 }} />
               <TableHead className="sticky-col-left" style={{ width: 180 }}>选题名称</TableHead>
               <TableHead style={{ width: 92 }}>
                 <div className="topic-library-head-inline">
@@ -662,91 +742,129 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
                   <Button variant="ghost" size="icon" className="topic-library-head-settings" onClick={() => setAnalysisConfigOpen(true)}><Settings size={13} /></Button>
                 </div>
               </TableHead>
-              <TableHead className="sticky-col-right" style={{ width: 48, textAlign: 'center' }}>操作</TableHead>
+              <TableHead className="sticky-col-right" style={{ width: 148, textAlign: 'center' }}>操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {topics.map(topic => (
-              <TableRow key={topic.id}>
-                <TableCell className="sticky-col-left">
-                  <ExpandableTextCell
-                    className="topic-library-text-cell"
-                    value={topic.name || ""} 
-                    onChange={(val: string) => handleUpdateRecord(topic.id, 'name', val)} 
-                    placeholder="输入选题名称..."
-                  />
-                </TableCell>
-                <TableCell>
-                  <CompactTagSelect
-                    value={topic.judgment_result || ""}
-                    options={options.judgment_result}
-                    placeholder="请选择"
-                    onChange={(val: string) => handleUpdateRecord(topic.id, 'judgment_result', val)}
-                  />
-                </TableCell>
-                <TableCell>
-                  <ExpandableTextCell
-                    className="topic-library-text-cell"
-                    value={topic.judgment_reason || ""} 
-                    onChange={(val: string) => handleUpdateRecord(topic.id, 'judgment_reason', val)} 
-                    placeholder="输入原因..."
-                  />
-                </TableCell>
-                <TableCell>
-                  <CompactTagSelect
-                    value={topic.source || ""}
-                    options={options.source}
-                    placeholder="请选择"
-                    onChange={(val: string) => handleUpdateRecord(topic.id, 'source', val)}
-                  />
-                </TableCell>
-                <TableCell className="topic-library-meta-cell">
-                  {formatDateTime(topic.created_at)}
-                </TableCell>
-                <TableCell>
-                  <ExpandableTextCell
-                    className="topic-library-text-cell topic-library-link-cell"
-                    style={{ color: 'var(--primary)' }}
-                    value={topic.ref_link || ""} 
-                    onChange={(val: string) => handleUpdateRecord(topic.id, 'ref_link', val)} 
-                    placeholder="输入链接..."
-                    multiline={false}
-                    isLink
-                  />
-                </TableCell>
-                <TableCell className="topic-library-meta-cell">
-                  {topic.ref_platform || "无匹配类别"}
-                </TableCell>
-                <TableCell>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className={`topic-library-action ${topic.ref_content ? "topic-library-action-view-copy" : "topic-library-action-extract"}`}
-                    onClick={() => setCopyDrawer(topic)}
-                  >
-                    {topic.ref_content ? "查看/修改" : "点击提取"}
-                  </Button>
-                </TableCell>
-                <TableCell>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className={`topic-library-action ${topicAnalysisJobs[topic.id]?.analyzing ? "topic-library-action-start-analysis" : (topic.ai_analysis_1 || topic.ai_analysis_2 || topic.ai_analysis_3 ? "topic-library-action-view-analysis" : "topic-library-action-start-analysis")}`}
-                    onClick={() => setAiDrawer(topic)}
-                  >
-                    {topicAnalysisJobs[topic.id]?.analyzing ? "分析中" : (topic.ai_analysis_1 || topic.ai_analysis_2 || topic.ai_analysis_3 ? "查看分析" : "开始分析")}
-                  </Button>
-                </TableCell>
-                <TableCell className="sticky-col-right text-center">
-                  <Button variant="ghost" size="icon" className="topic-library-delete-btn" onClick={() => handleDeleteRecord(topic.id)}>
-                    <Trash2 size={14} className="text-muted-foreground" />
-                  </Button>
-                </TableCell>
+              <TableRow
+                key={topic.id}
+                className={`${draggingTopicId === topic.id ? "topic-library-row-dragging" : ""} ${dragOverTopicId === topic.id ? "topic-library-row-drop-target" : ""}`.trim()}
+                onDragOver={(event) => event.preventDefault()}
+                onDragEnter={() => handleTopicDragEnter(topic.id)}
+                onDrop={() => handleTopicDrop(topic.id)}
+              >
+                {(() => {
+                  const hasVisibleStoredAnalysis = buildStoredAnalysisResults(topic, topicModels).length > 0;
+                  return (
+                    <>
+                      <TableCell className="topic-library-drag-cell sticky-drag-col">
+                        <button
+                          type="button"
+                          draggable
+                          className={`topic-library-drag-handle ${draggingTopicId === topic.id ? "is-dragging" : ""}`}
+                          aria-label={`拖动排序：${topic.name || "未命名选题"}`}
+                          title="拖动排序"
+                          onDragStart={(event) => handleTopicDragStart(event, topic.id)}
+                          onDragEnd={handleTopicDragEnd}
+                        >
+                          {Array.from({ length: 6 }).map((_, index) => (
+                            <span key={index} className="topic-library-drag-dot" />
+                          ))}
+                        </button>
+                      </TableCell>
+                      <TableCell className="sticky-col-left">
+                        <ExpandableTextCell
+                          className="topic-library-text-cell"
+                          value={topic.name || ""}
+                          onChange={(val: string) => handleUpdateRecord(topic.id, 'name', val)}
+                          placeholder="输入选题名称..."
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <CompactTagSelect
+                          value={topic.judgment_result || ""}
+                          options={options.judgment_result}
+                          placeholder="请选择"
+                          onChange={(val: string) => handleUpdateRecord(topic.id, 'judgment_result', val)}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <ExpandableTextCell
+                          className="topic-library-text-cell"
+                          value={topic.judgment_reason || ""}
+                          onChange={(val: string) => handleUpdateRecord(topic.id, 'judgment_reason', val)}
+                          placeholder="输入原因..."
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <CompactTagSelect
+                          value={topic.source || ""}
+                          options={options.source}
+                          placeholder="请选择"
+                          onChange={(val: string) => handleUpdateRecord(topic.id, 'source', val)}
+                        />
+                      </TableCell>
+                      <TableCell className="topic-library-meta-cell">
+                        {formatDateTime(topic.created_at)}
+                      </TableCell>
+                      <TableCell>
+                        <ExpandableTextCell
+                          className="topic-library-text-cell topic-library-link-cell"
+                          style={{ color: 'var(--primary)' }}
+                          value={topic.ref_link || ""}
+                          onChange={(val: string) => handleUpdateRecord(topic.id, 'ref_link', val)}
+                          placeholder="输入链接..."
+                          multiline={false}
+                          isLink
+                        />
+                      </TableCell>
+                      <TableCell className="topic-library-meta-cell">
+                        {topic.ref_platform || "无匹配类别"}
+                      </TableCell>
+                      <TableCell>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className={`topic-library-action ${topic.ref_content ? "topic-library-action-view-copy" : "topic-library-action-extract"}`}
+                          onClick={() => setCopyDrawer(topic)}
+                        >
+                          {topic.ref_content ? "查看/修改" : "点击提取"}
+                        </Button>
+                      </TableCell>
+                      <TableCell>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className={`topic-library-action ${topicAnalysisJobs[topic.id]?.analyzing ? "topic-library-action-start-analysis" : (hasVisibleStoredAnalysis ? "topic-library-action-view-analysis" : "topic-library-action-start-analysis")}`}
+                          onClick={() => setAiDrawer(topic)}
+                        >
+                          {topicAnalysisJobs[topic.id]?.analyzing ? "分析中" : (hasVisibleStoredAnalysis ? "查看分析" : "开始分析")}
+                        </Button>
+                      </TableCell>
+                      <TableCell className="sticky-col-right text-center">
+                        <div className="topic-library-row-actions">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="topic-library-action topic-library-action-view-analysis"
+                            onClick={() => onEnterProduction?.(topic)}
+                          >
+                            进入内容生产
+                          </Button>
+                          <Button variant="ghost" size="icon" className="topic-library-delete-btn" onClick={() => handleDeleteRecord(topic.id)}>
+                            <Trash2 size={14} className="text-muted-foreground" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </>
+                  );
+                })()}
               </TableRow>
             ))}
             {topics.length === 0 && (
               <TableRow>
-                <TableCell colSpan={10} className="h-24 text-center text-muted-foreground">
+                <TableCell colSpan={11} className="h-24 text-center text-muted-foreground">
                   暂无数据，点击右上角新增选题
                 </TableCell>
               </TableRow>
@@ -966,12 +1084,9 @@ function TopicAiDrawer({ topic, onClose, analysisState, onAnalyze, systemInstruc
 
   if (!topic) return null;
   const analyzing = Boolean(analysisState?.analyzing);
-  const storedResults = [
-    parseStoredTopicAnalysisResult(models[0], topic.ai_analysis_1),
-    parseStoredTopicAnalysisResult(models[1], topic.ai_analysis_2),
-    parseStoredTopicAnalysisResult(models[2], topic.ai_analysis_3)
-  ].filter(Boolean) as TopicAiResultEntry[];
+  const storedResults = buildStoredAnalysisResults(topic, models);
   const results = analysisState?.results?.length ? analysisState.results : storedResults;
+  const resultGridColumns = models.length === 1 ? "minmax(0, 1fr)" : `repeat(${models.length}, minmax(0, 1fr))`;
 
   return (
     <Sheet open={!!topic} onOpenChange={(open) => !open && onClose()}>
@@ -994,29 +1109,53 @@ function TopicAiDrawer({ topic, onClose, analysisState, onAnalyze, systemInstruc
                   查看全部提示词
                 </Button>
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-col gap-2">
                 {models.map((m, i) => (
-                  <Select
-                    key={`${i}-${m}`}
-                    value={m}
-                    onValueChange={(val) => {
-                      const newM = [...models];
-                      newM[i] = val;
-                      onModelsChange(newM);
-                    }}
-                  >
-                    <SelectTrigger className="flex-1">
-                      <SelectValue placeholder="选择模型" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {MODEL_OPTIONS.map((option) => (
-                        <SelectItem key={option} value={option}>
-                          {option}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <div key={`${i}-${m}`} className="flex items-center gap-2">
+                    <div className="w-16 text-xs font-medium text-muted-foreground">模型 {i + 1}</div>
+                    <Select
+                      value={m}
+                      onValueChange={(val) => {
+                        const newM = [...models];
+                        newM[i] = val;
+                        onModelsChange(newM);
+                      }}
+                    >
+                      <SelectTrigger className="flex-1">
+                        <SelectValue placeholder="选择模型" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {MODEL_OPTIONS.map((option) => (
+                          <SelectItem key={option} value={option}>
+                            {option}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {models.length > 1 ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        className="shrink-0"
+                        onClick={() => onModelsChange(models.filter((_: string, index: number) => index !== i))}
+                      >
+                        <Trash2 size={15} />
+                      </Button>
+                    ) : null}
+                  </div>
                 ))}
+                {models.length < 3 ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="self-start"
+                    onClick={() => onModelsChange([...models, getNextTopicModel(models)])}
+                  >
+                    <Plus size={14} className="mr-1.5" />
+                    添加模型
+                  </Button>
+                ) : null}
               </div>
             </div>
 
@@ -1026,12 +1165,12 @@ function TopicAiDrawer({ topic, onClose, analysisState, onAnalyze, systemInstruc
             </Button>
           </div>
 
-          <div className="flex gap-4 min-h-[400px]">
+          <div className="grid gap-4 min-h-[400px]" style={{ gridTemplateColumns: resultGridColumns }}>
             {models.map((model, i) => {
-              const res = results.find(r => r.model === model);
+              const res = results[i] || results.find(r => r.model === model);
               const hasVisibleContent = Boolean(res?.error || res?.result);
               return (
-                <div key={model} className="flex-1 bg-card border border-border rounded-lg flex flex-col overflow-hidden">
+                <div key={`${i}-${model}`} className="flex-1 bg-card border border-border rounded-lg flex flex-col overflow-hidden">
                   <div className="bg-muted p-3 border-b border-border font-semibold text-sm flex justify-between items-center">
                     <span>{model}</span>
                     {analyzing ? <Badge variant="secondary">分析中</Badge> : null}

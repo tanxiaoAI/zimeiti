@@ -365,6 +365,42 @@ export async function analyzeTopicLibraryContent(systemInstruction, topicData, t
   return await callLlmWithPrompt(API_URL, actualModelName, modelConfig, systemInstruction, promptText);
 }
 
+export async function generateContentProductionStep(systemInstruction, stepData, targetModel) {
+  const modelConfig = resolveModelConfig(targetModel);
+  const { actualModelName, useGptsChatApi, useGptsMessagesApi } = modelConfig;
+
+  const API_URL = useGptsChatApi
+    ? `${GPTS_API_BASE_URL}/v1/chat/completions`
+    : useGptsMessagesApi
+      ? `${GPTS_API_BASE_URL}/v1/messages`
+      : `https://api.ricoxueai.cn/v1beta/models/${actualModelName}:generateContent`;
+
+  const promptText = [
+    "请执行以下内容生产任务：",
+    "",
+    `当前流程：${stepData?.stepLabel || "未命名流程"}`,
+    "",
+    "选题名称：",
+    stepData?.topicName || "未填写",
+    "",
+    "参考文案：",
+    stepData?.refContent || "无",
+    "",
+    "当前输入内容：",
+    stepData?.inputContent || "无",
+    "",
+    "请直接输出可用于当前流程的结果正文，不要解释模型规则，不要添加多余前后缀。"
+  ].join("\n");
+
+  return await callLlmWithPrompt(
+    API_URL,
+    actualModelName,
+    modelConfig,
+    systemInstruction || "你是资深中文内容生产助手，请输出清晰、完整、可直接使用的内容。",
+    promptText
+  );
+}
+
 async function callLlmWithPrompt(API_URL, actualModelName, apiConfig, systemInstruction, promptText, cover_image = null) {
   const { useGptsChatApi, useGptsMessagesApi, apiMode, modelName } = apiConfig;
   let payload, headers;

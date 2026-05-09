@@ -37,10 +37,8 @@ const NAV_GROUPS = [
   {
     label: "创作中心",
     items: [
-      { id: "hot", title: "热点榜单", icon: Flame },
       { id: "topic_library", title: "选题库", icon: Database },
-      { id: "topics", title: "选题池", icon: ListTodo },
-      { id: "editor", title: "内容编辑器", icon: Edit },
+      { id: "content_production", title: "内容生产", icon: Edit },
       { id: "generate_cover", title: "生成封面", icon: ImageIcon },
     ]
   },
@@ -295,6 +293,20 @@ async function readApiResponse(response: Response) {
   return { rawText, json };
 }
 
+const CONTENT_PRODUCTION_STEPS = [
+  { id: "topic_adjust", title: "AI选题调整", inputField: "cp_topic_adjust_input", resultField: "cp_topic_adjust_result", placeholder: "输入你对这个选题的补充要求、目标人群、风格限制或想调整的方向..." },
+  { id: "outline", title: "AI生成框架", inputField: "cp_outline_input", resultField: "cp_outline_result", placeholder: "输入你希望生成的内容框架要求，例如结构、角度、篇幅、形式..." },
+  { id: "draft", title: "AI生成初稿", inputField: "cp_draft_input", resultField: "cp_draft_result", placeholder: "输入初稿生成要求，例如字数、风格、是否口语化、是否带案例..." },
+  { id: "value_review", title: "AI内容价值评估", inputField: "cp_value_review_input", resultField: "cp_value_review_result", placeholder: "输入你希望 AI 从哪些维度评估这篇内容，例如信息密度、传播性、差异化..." },
+  { id: "final_optimize", title: "AI优化终稿", inputField: "cp_final_optimize_input", resultField: "cp_final_optimize_result", placeholder: "输入终稿优化要求，例如更流畅、更有说服力、更适合发布平台..." }
+] as const;
+
+function truncateTopicTitle(title: string, maxLength = 12) {
+  const text = String(title || "").trim();
+  if (!text) return "未命名选题";
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+}
+
 export default function App() {
   const [activeNav, setActiveNav] = useState("freeChat");
   const [activeTopic, setActiveTopic] = useState<any>(null);
@@ -401,7 +413,7 @@ export default function App() {
 
   const handleTopicSelect = (topic: any) => {
     setActiveTopic(topic);
-    setActiveNav("editor");
+    setActiveNav("content_production");
   };
 
   const renderContent = () => {
@@ -409,11 +421,9 @@ export default function App() {
       case "freeChat": return <FreeChatView activeAccountId={activeAccountId} />;
       case "positioning": return <PositioningView activeAccountId={activeAccountId} />;
       case "teardown": return <TeardownView activeAccountId={activeAccountId} />;
-      case "hot": return <HotView onUseKeyword={(kw) => { setActiveNav("topics"); }} />;
-      case "topic_library": return <TopicLibraryView activeAccountId={activeAccountId} />;
-      case "topics": return <TopicsView onSelectTopic={handleTopicSelect} />;
+      case "topic_library": return <TopicLibraryView activeAccountId={activeAccountId} onEnterProduction={handleTopicSelect} />;
       case "generate_cover": return <GenerateCoverView activeAccountId={activeAccountId} />;
-      case "editor": return <EditorView topic={activeTopic} />;
+      case "content_production": return <EditorView activeAccountId={activeAccountId} topic={activeTopic} onTopicChange={setActiveTopic} />;
       case "analytics": return <AnalyticsView />;
       case "config": return <ConfigView activeAccountId={activeAccountId} />;
       default: return <div className="empty-state">建设中...</div>;
@@ -687,10 +697,7 @@ function ConfigView({ activeAccountId }: { activeAccountId: string }) {
     { id: "free_chat", title: "自由对话" },
     { id: "positioning", title: "账号定位生成" },
     { id: "teardown", title: "视频内容拆解" },
-    { id: "topics", title: "选题池生成" },
-    { id: "title", title: "标题生成" },
-    { id: "hook", title: "开头 (Hook) 生成" },
-    { id: "body", title: "正文与脚本填充" },
+    { id: "content_production", title: "内容生产" },
     { id: "analytics", title: "数据复盘诊断" },
   ];
 
@@ -2158,104 +2165,337 @@ function TopicsView({ onSelectTopic }: { onSelectTopic: (topic: any) => void }) 
   );
 }
 
-function EditorView({ topic }: { topic: any }) {
-  const [step, setStep] = useState(1);
-  const [data, setData] = useState({ title: "", hook: "", body: "", cover: false });
-  const [loading, setLoading] = useState(false);
+function EditorView({ activeAccountId, topic, onTopicChange }: { activeAccountId: string; topic: any; onTopicChange: (topic: any | null) => void }) {
+  const [topics, setTopics] = useState<any[]>([]);
+  const [topicsLoading, setTopicsLoading] = useState(false);
+  const [activeStepId, setActiveStepId] = useState(CONTENT_PRODUCTION_STEPS[0].id);
+  const [selectedTopicId, setSelectedTopicId] = useState("");
+  const [selectedModel, setSelectedModel] = useState("gpt-5.5");
+  const [promptValue, setPromptValue] = useState("你是资深中文内容生产助手，请输出清晰、完整、可直接使用的内容。");
+  const [inputDraft, setInputDraft] = useState("");
+  const [resultDraft, setResultDraft] = useState("");
+  const [savingInput, setSavingInput] = useState(false);
+  const [savingResult, setSavingResult] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [statusText, setStatusText] = useState("");
 
-  if (!topic) {
+  const activeStep = CONTENT_PRODUCTION_STEPS.find((item) => item.id === activeStepId) || CONTENT_PRODUCTION_STEPS[0];
+  const selectedTopic = topics.find((item) => item.id === selectedTopicId) || null;
+
+  const fetchTopics = async () => {
+    if (!activeAccountId) return;
+    try {
+      setTopicsLoading(true);
+      const res = await fetch(`/api/v1/projects/${activeAccountId}/topic-library`, {
+        headers: { "X-API-Key": "demo-key" }
+      });
+      const payload = await readApiResponse(res);
+      if (!res.ok || payload.json?.success === false || payload.json?.error) {
+        throw new Error(payload.json?.message || payload.json?.error?.message || "加载选题库失败");
+      }
+      setTopics(payload.json?.data?.items || []);
+    } catch (e) {
+      console.error(e);
+      setTopics([]);
+    } finally {
+      setTopicsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchTopics();
+  }, [activeAccountId]);
+
+  useEffect(() => {
+    const savedModel = readScopedConfig(activeAccountId, "content_production", "model");
+    const savedPrompt = readScopedConfig(activeAccountId, "content_production", "prompt");
+    setSelectedModel(savedModel || "gpt-5.5");
+    setPromptValue(savedPrompt || "你是资深中文内容生产助手，请输出清晰、完整、可直接使用的内容。");
+  }, [activeAccountId]);
+
+  useEffect(() => {
+    if (topic?.id) {
+      setSelectedTopicId(topic.id);
+      return;
+    }
+    if (!topics.length) {
+      setSelectedTopicId("");
+      onTopicChange(null);
+      return;
+    }
+    if (selectedTopicId && topics.some((item) => item.id === selectedTopicId)) {
+      return;
+    }
+    setSelectedTopicId(topics[0].id);
+    onTopicChange(topics[0]);
+  }, [topic, topics, selectedTopicId, onTopicChange]);
+
+  useEffect(() => {
+    if (!selectedTopic) {
+      setInputDraft("");
+      setResultDraft("");
+      return;
+    }
+    setInputDraft(String(selectedTopic[activeStep.inputField] || ""));
+    setResultDraft(String(selectedTopic[activeStep.resultField] || ""));
+  }, [selectedTopic, activeStep]);
+
+  const updateTopicInState = (updated: any) => {
+    setTopics((prev) => prev.map((item) => item.id === updated.id ? updated : item));
+    if (updated?.id === selectedTopicId) {
+      onTopicChange(updated);
+    }
+  };
+
+  const persistStepPatch = async (patch: Record<string, any>, savingKind: "input" | "result" | "both") => {
+    if (!selectedTopic) return null;
+    try {
+      if (savingKind === "input" || savingKind === "both") setSavingInput(true);
+      if (savingKind === "result" || savingKind === "both") setSavingResult(true);
+      const res = await fetch(`/api/v1/projects/${activeAccountId}/topic-library/${selectedTopic.id}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "X-API-Key": "demo-key"
+        },
+        body: JSON.stringify(patch)
+      });
+      const payload = await readApiResponse(res);
+      if (!res.ok || payload.json?.success === false || payload.json?.error) {
+        throw new Error(payload.json?.message || payload.json?.error?.message || "保存失败");
+      }
+      const updated = payload.json?.data;
+      if (updated) updateTopicInState(updated);
+      return updated;
+    } finally {
+      setSavingInput(false);
+      setSavingResult(false);
+    }
+  };
+
+  const handleTopicSwitch = (nextTopic: any) => {
+    setSelectedTopicId(nextTopic.id);
+    onTopicChange(nextTopic);
+    setStatusText("");
+  };
+
+  const handleModelChange = (nextModel: string) => {
+    setSelectedModel(nextModel);
+    writeScopedConfig(activeAccountId, "content_production", "model", nextModel);
+    setStatusText("模型默认配置已保存");
+  };
+
+  const handlePromptBlur = () => {
+    writeScopedConfig(activeAccountId, "content_production", "prompt", promptValue);
+    setStatusText("提示词默认配置已保存");
+  };
+
+  const handleSaveInput = async () => {
+    if (!selectedTopic) return;
+    await persistStepPatch({ [activeStep.inputField]: inputDraft }, "input");
+    setStatusText("当前流程输入内容已保存");
+  };
+
+  const handleSaveResult = async () => {
+    if (!selectedTopic) return;
+    await persistStepPatch({ [activeStep.resultField]: resultDraft }, "result");
+    setStatusText("当前流程生成结果已保存");
+  };
+
+  const handleGenerate = async () => {
+    if (!selectedTopic) return;
+    try {
+      setGenerating(true);
+      setStatusText("");
+      const res = await fetch(`/api/v1/projects/${activeAccountId}/topic-library/${selectedTopic.id}/content-production/generate`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-API-Key": "demo-key"
+        },
+        body: JSON.stringify({
+          stepId: activeStep.id,
+          stepLabel: activeStep.title,
+          systemInstruction: promptValue,
+          model: selectedModel,
+          inputContent: inputDraft
+        })
+      });
+      const payload = await readApiResponse(res);
+      if (!res.ok || payload.json?.success === false || payload.json?.error) {
+        throw new Error(payload.json?.message || payload.json?.error?.message || "生成失败");
+      }
+      const nextResult = String(payload.json?.data?.result || "");
+      setResultDraft(nextResult);
+      await persistStepPatch({
+        [activeStep.inputField]: inputDraft,
+        [activeStep.resultField]: nextResult
+      }, "both");
+      setStatusText("已生成并保存当前流程结果");
+    } catch (e: any) {
+      console.error(e);
+      alert(`内容生产异常：${e.message || "未知错误"}`);
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  if (topicsLoading && !topics.length) {
     return (
       <div className="empty-state">
         <Edit size={48} />
-        <h3>未选择选题</h3>
-        <p>请先在“选题池”中选择一个选题进行创作。</p>
+        <h3>正在加载内容生产选题</h3>
+        <p>稍等一下，正在读取当前账号的选题库。</p>
       </div>
     );
   }
 
-  const simulateGen = async (field: string, val: string, nextStep: number) => {
-    setLoading(true);
-    await sleep(1500);
-    setData(prev => ({ ...prev, [field]: val }));
-    setStep(nextStep);
-    setLoading(false);
-  };
+  if (!selectedTopic) {
+    return (
+      <div className="empty-state">
+        <Edit size={48} />
+        <h3>还没有可生产的选题</h3>
+        <p>请先去“选题库”新增选题，或在选题库列表里点击“进入内容生产”。</p>
+      </div>
+    );
+  }
 
   return (
     <div>
       <div className="page-header">
-        <h2>一体化内容编辑器</h2>
-        <p>当前选题：<strong style={{ color: 'var(--primary)' }}>{topic.title}</strong></p>
+        <h2>内容生产</h2>
+        <p>围绕同一个选题，按 5 个流程分别推进；输入内容与生成结果都会按选题长期保存。</p>
       </div>
 
-      {/* 第一步：标题 */}
-      <div className={`editor-section ${step >= 1 ? 'active' : ''}`}>
-        <div className="editor-section-header">
-          <h3>1. 爆款标题候选</h3>
-          {step === 1 && (
-            <button className="btn-ghost" onClick={() => simulateGen('title', "1. 别再瞎忙了！打工人必备的3个“王炸”AI工具🔥\n2. 偷偷变卷：让我按时下班的隐藏神器🤫\n3. 建议收藏！小白也能看懂的AI提效攻略", 2)}>
-              <Sparkles size={14} /> 生成标题
-            </button>
-          )}
-        </div>
-        {data.title && <div className="result-box">{data.title}</div>}
-      </div>
-
-      {/* 第二步：开头 */}
-      <div className={`editor-section ${step >= 2 ? 'active' : ''}`} style={{ opacity: step >= 2 ? 1 : 0.5 }}>
-        <div className="editor-section-header">
-          <h3>2. 黄金三秒开头 (Hook)</h3>
-          {step === 2 && (
-            <button className="btn-ghost" onClick={() => simulateGen('hook', "“你是不是也经常这样：找资料2小时，写PPT3小时，最后排版还要搞半天？别滑走，今天分享的这3个神仙工具，能让你直接把工作效率提升3倍！”", 3)}>
-              <Sparkles size={14} /> 生成开头
-            </button>
-          )}
-        </div>
-        {data.hook && <div className="result-box">{data.hook}</div>}
-      </div>
-
-      {/* 第三步：正文填充 */}
-      <div className={`editor-section ${step >= 3 ? 'active' : ''}`} style={{ opacity: step >= 3 ? 1 : 0.5 }}>
-        <div className="editor-section-header">
-          <h3>3. 正文/脚本填充</h3>
-          {step === 3 && (
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button className="btn-ghost" onClick={() => simulateGen('body', "正文块1：痛点引入...\n正文块2：工具A演示...\n正文块3：工具B演示...\n结尾CTA：你平时都用什么工具？评论区见！", 4)}>
-                直接生成
-              </button>
-              <button className="btn-primary" onClick={() => simulateGen('body', "[引用知识库: 效率工具清单.pdf]\n正文块1：根据知识库，推荐Notion...\n正文块2：推荐ChatGPT...\n结尾CTA：点赞收藏不迷路！", 4)}>
-                <Database size={14} /> 结合 RAG 生成
-              </button>
+      <div className="card" style={{ marginBottom: 20 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div>
+            <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: 10 }}>选题切换</div>
+            <div style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 4 }}>
+              {topics.map((item) => (
+                <button
+                  key={item.id}
+                  className={`nav-item ${selectedTopicId === item.id ? 'active' : ''}`}
+                  style={{ width: 'auto', whiteSpace: 'nowrap', flexShrink: 0 }}
+                  title={item.name || "未命名选题"}
+                  onClick={() => handleTopicSwitch(item)}
+                >
+                  {truncateTopicTitle(item.name || "未命名选题")}
+                </button>
+              ))}
             </div>
-          )}
+          </div>
+
+          <div style={{ padding: '14px 16px', borderRadius: 12, background: 'var(--bg-app)', border: '1px solid var(--border-light)' }}>
+            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: 6 }}>当前选题</div>
+            <div style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--primary)' }}>{selectedTopic.name || "未命名选题"}</div>
+            <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginTop: 6 }}>
+              参考文案：{String(selectedTopic.ref_content || "").trim() ? truncateTopicTitle(String(selectedTopic.ref_content || ""), 36) : "暂无参考文案"}
+            </div>
+          </div>
+
+          <div>
+            <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: 10 }}>生产流程</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 10 }}>
+              {CONTENT_PRODUCTION_STEPS.map((step) => (
+                <button
+                  key={step.id}
+                  className={`nav-item ${activeStepId === step.id ? 'active' : ''}`}
+                  style={{ justifyContent: 'center', minHeight: 42 }}
+                  onClick={() => setActiveStepId(step.id)}
+                >
+                  {step.title}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
-        {data.body && <div className="result-box">{data.body}</div>}
       </div>
 
-      {/* 第四步：封面 */}
-      <div className={`editor-section ${step >= 4 ? 'active' : ''}`} style={{ opacity: step >= 4 ? 1 : 0.5, borderLeftColor: 'transparent' }}>
-        <div className="editor-section-header">
-          <h3>4. 模板化封面渲染</h3>
-          {step === 4 && (
-            <button className="btn-primary" onClick={() => simulateGen('cover', "done", 5)}>
-              <ImageIcon size={14} /> 一键渲染 8 套模板
-            </button>
-          )}
-        </div>
-        {data.cover && (
-          <div className="cover-grid">
-            {[1,2,3,4].map(i => (
-              <div key={i} className="cover-item">
-                <img src={`https://placehold.co/300x400/1890ff/ffffff?text=Template+0${i}`} alt={`Tpl ${i}`} />
-                <div className="overlay">
-                  <button className="btn-primary" style={{ padding: '6px 12px', fontSize: '0.8rem' }}>采用此封面</button>
+      <div className="card">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 16 }}>
+            <div>
+              <label style={{ display: 'block', fontSize: '0.86rem', fontWeight: 700, marginBottom: 8 }}>模型选择</label>
+              <select
+                className="input-field"
+                style={{ padding: '10px 12px', background: 'var(--bg-app)', cursor: 'pointer', appearance: 'auto' }}
+                value={selectedModel}
+                onChange={e => handleModelChange(e.target.value)}
+              >
+                <option value="gpt-5.4">gpt-5.4</option>
+                <option value="gpt-5.5">gpt-5.5</option>
+                <option value="claude-opus-4-6">claude-opus-4-6</option>
+                <option value="claude-sonnet-4-6-thinking">claude-sonnet-4-6-thinking</option>
+                <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
+                <option value="gpts-gemini-3.1-pro-preview">gpts-gemini-3.1-pro-preview</option>
+              </select>
+              <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: 8 }}>
+                当前模型会作为 5 个流程的默认模型，并自动保存。
+              </p>
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: '0.86rem', fontWeight: 700, marginBottom: 8 }}>提示词配置</label>
+              <textarea
+                className="input-field"
+                style={{ minHeight: 120 }}
+                value={promptValue}
+                onChange={e => setPromptValue(e.target.value)}
+                onBlur={handlePromptBlur}
+                placeholder="请输入内容生产默认提示词"
+              />
+              <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: 8 }}>
+                提示词对当前账号下全部选题、全部 5 个流程共用，离开输入框后自动保存。
+              </p>
+            </div>
+          </div>
+
+          {statusText ? (
+            <div style={{ padding: '10px 12px', borderRadius: 10, background: 'rgba(37,99,235,0.06)', border: '1px solid rgba(37,99,235,0.12)', fontSize: '0.82rem', color: 'var(--primary)' }}>
+              {statusText}
+            </div>
+          ) : null}
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                <h3 style={{ margin: 0 }}>{activeStep.title} · 输入内容</h3>
+                <button className="btn-ghost" onClick={handleSaveInput} disabled={savingInput}>
+                  {savingInput ? "保存中..." : "保存输入"}
+                </button>
+              </div>
+              <textarea
+                className="input-field"
+                style={{ minHeight: 320, resize: 'vertical' }}
+                value={inputDraft}
+                onChange={e => setInputDraft(e.target.value)}
+                placeholder={activeStep.placeholder}
+              />
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                <h3 style={{ margin: 0 }}>{activeStep.title} · 生成结果</h3>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="btn-primary" onClick={handleGenerate} disabled={generating}>
+                    <Sparkles size={15} /> {generating ? "生成中..." : "开始生成"}
+                  </button>
+                  <button className="btn-ghost" onClick={handleSaveResult} disabled={savingResult}>
+                    {savingResult ? "保存中..." : "保存结果"}
+                  </button>
                 </div>
               </div>
-            ))}
+              <textarea
+                className="input-field"
+                style={{ minHeight: 320, resize: 'vertical' }}
+                value={resultDraft}
+                onChange={e => setResultDraft(e.target.value)}
+                placeholder="这里会显示当前流程的 AI 结果，你也可以继续手动修改。"
+              />
+            </div>
           </div>
-        )}
+        </div>
       </div>
-
     </div>
   );
 }

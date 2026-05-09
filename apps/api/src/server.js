@@ -60,11 +60,12 @@ import {
   createTopicLibraryItem,
   getTopicLibraryItem,
   updateTopicLibraryItem,
-  deleteTopicLibraryItem
+  deleteTopicLibraryItem,
+  reorderTopicLibraryItems
 } from "./services/appStore.js";
 import { addVideoTeardown, listVideoTeardowns, getVideoTeardown, updateVideoTeardown, deleteVideoTeardown } from "./services/appStore.js";
 
-import { streamChatWithGemini, analyzeVideoWithGemini, analyzeTopicLibraryContent } from "./services/aiAgent.js";
+import { streamChatWithGemini, analyzeVideoWithGemini, analyzeTopicLibraryContent, generateContentProductionStep } from "./services/aiAgent.js";
 import { getLlmProvider } from "./providers/llm/index.js";
 import { getHotProvider } from "./providers/hot/index.js";
 import { getCoverProvider } from "./providers/cover/index.js";
@@ -1712,6 +1713,26 @@ app.delete("/api/v1/projects/:projectId/topic-library/:id", authApiKey, (req, re
   res.json(ok({ deleted: true }, request_id));
 });
 
+app.post("/api/v1/projects/:projectId/topic-library/reorder", authApiKey, (req, res) => {
+  const request_id = req.context?.requestId;
+  const project = getProject(req.params.projectId);
+  if (!project) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在" }, request_id));
+
+  const orderedIds = Array.isArray(req.body?.orderedIds)
+    ? req.body.orderedIds.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  if (orderedIds.length === 0) {
+    return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "缺少排序后的选题 ID 列表" }, request_id));
+  }
+
+  try {
+    const items = reorderTopicLibraryItems(project.id, orderedIds);
+    res.json(ok({ items }, request_id));
+  } catch (error) {
+    res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: error.message || "排序保存失败" }, request_id));
+  }
+});
+
 app.post("/api/v1/projects/:projectId/topic-library/extract", authApiKey, async (req, res) => {
   const request_id = req.context?.requestId;
   const { link, platform } = req.body;
@@ -1989,6 +2010,100 @@ app.get("/api/v1/projects/:projectId/topic-library/analyze-logs", authApiKey, (r
       limit
     })
   }, request_id));
+});
+
+app.post("/api/v1/projects/:projectId/topic-library/:id/content-production/generate", authApiKey, async (req, res) => {
+  const request_id = req.context?.requestId;
+  const user_id = req.context?.userId;
+  const project_id = req.params.projectId;
+  const { stepId, stepLabel, systemInstruction, model, inputContent } = req.body || {};
+
+  const project = getProject(project_id);
+  if (!project) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在" }, request_id));
+  const topic = getTopicLibraryItem(req.params.id);
+  if (!topic || topic.project_id !== project.id) {
+    return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "选题不存在" }, request_id));
+  }
+  if (!String(stepId || "").trim()) {
+    return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "缺少流程标识" }, request_id));
+  }
+  if (!String(model || "").trim()) {
+    return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "缺少模型选择" }, request_id));
+  }
+
+  const normalizedInputContent = String(inputContent || "").trim() || "无";
+  const normalizedInstruction = String(systemInstruction || "").trim() || "你是资深中文内容生产助手，请输出清晰、完整、可直接使用的内容。";
+  const normalizedStepLabel = String(stepLabel || stepId || "内容生产").trim();
+
+  try {
+    const startedAt = Date.now();
+    const generated = await generateContentProductionStep(
+      normalizedInstruction,
+      {
+        stepId,
+        stepLabel: normalizedStepLabel,
+        topicName: topic.name,
+        refContent: String(topic.ref_content || "").trim() || "无",
+        inputContent: normalizedInputContent
+      },
+      model
+    );
+
+    addGenerationLog({
+      user_id,
+      project_id,
+      feature: "content_production.generate",
+      provider: "llm",
+      mode: generated.apiMode,
+      request_id,
+      status: "ok",
+      request_json: {
+        step_id: stepId,
+        step_label: normalizedStepLabel,
+        model,
+        topic_name: topic.name || "",
+        input_preview: buildPreviewText(normalizedInputContent),
+        prompt_preview: buildPreviewText(normalizedInstruction)
+      },
+      response_json: {
+        actual_model: generated.actualModelName,
+        api_mode: generated.apiMode,
+        latency_ms: Date.now() - startedAt,
+        usage: generated.usage,
+        estimated_cost_usd: generated.estimated_cost_usd,
+        result_preview: buildPreviewText(generated.text)
+      }
+    });
+
+    res.json(ok({
+      result: generated.text,
+      usage: generated.usage,
+      estimated_cost_usd: generated.estimated_cost_usd,
+      api_mode: generated.apiMode
+    }, request_id));
+  } catch (e) {
+    addGenerationLog({
+      user_id,
+      project_id,
+      feature: "content_production.generate",
+      provider: "llm",
+      mode: null,
+      request_id,
+      status: "error",
+      request_json: {
+        step_id: stepId,
+        step_label: normalizedStepLabel,
+        model,
+        topic_name: topic.name || "",
+        input_preview: buildPreviewText(normalizedInputContent),
+        prompt_preview: buildPreviewText(normalizedInstruction)
+      },
+      response_json: {
+        error: e.message
+      }
+    });
+    res.status(500).json(fail({ code: ErrorCodes.INTERNAL_ERROR, message: "内容生产失败：" + e.message }, request_id));
+  }
 });
 
 // capabilities/hot

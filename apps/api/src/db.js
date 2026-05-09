@@ -9,6 +9,29 @@ fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
 export const db = new Database(dbPath, { verbose: console.log });
 
+function normalizeTopicLibrarySortOrder() {
+  const projects = db.prepare("SELECT DISTINCT project_id FROM topic_library").all();
+  const updateOrder = db.prepare("UPDATE topic_library SET sort_order = ? WHERE id = ?");
+  const tx = db.transaction(() => {
+    for (const project of projects) {
+      const rows = db.prepare(`
+        SELECT id
+        FROM topic_library
+        WHERE project_id = ?
+        ORDER BY
+          CASE WHEN sort_order IS NULL THEN 1 ELSE 0 END,
+          sort_order ASC,
+          created_at DESC
+      `).all(project.project_id);
+
+      rows.forEach((row, index) => {
+        updateOrder.run(index, row.id);
+      });
+    }
+  });
+  tx();
+}
+
 export function initDb() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
@@ -90,6 +113,17 @@ export function initDb() {
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL,
       name TEXT NOT NULL,
+      sort_order INTEGER,
+      cp_topic_adjust_input TEXT,
+      cp_topic_adjust_result TEXT,
+      cp_outline_input TEXT,
+      cp_outline_result TEXT,
+      cp_draft_input TEXT,
+      cp_draft_result TEXT,
+      cp_value_review_input TEXT,
+      cp_value_review_result TEXT,
+      cp_final_optimize_input TEXT,
+      cp_final_optimize_result TEXT,
       judgment_result TEXT,
       judgment_reason TEXT,
       source TEXT,
@@ -150,6 +184,33 @@ export function initDb() {
     // Column might already exist
   }
 
+  try {
+    db.exec(`ALTER TABLE topic_library ADD COLUMN sort_order INTEGER;`);
+  } catch (e) {
+    // Column might already exist
+  }
+
+  const topicLibraryExtraColumns = [
+    "cp_topic_adjust_input TEXT",
+    "cp_topic_adjust_result TEXT",
+    "cp_outline_input TEXT",
+    "cp_outline_result TEXT",
+    "cp_draft_input TEXT",
+    "cp_draft_result TEXT",
+    "cp_value_review_input TEXT",
+    "cp_value_review_result TEXT",
+    "cp_final_optimize_input TEXT",
+    "cp_final_optimize_result TEXT"
+  ];
+
+  for (const columnDef of topicLibraryExtraColumns) {
+    try {
+      db.exec(`ALTER TABLE topic_library ADD COLUMN ${columnDef};`);
+    } catch (e) {
+      // Column might already exist
+    }
+  }
+
   db.exec(`
     -- Ensure a demo user exists
     INSERT OR IGNORE INTO users (id, username) VALUES ('demo_user_123', 'Demo User');
@@ -170,6 +231,8 @@ export function initDb() {
     INSERT OR IGNORE INTO topic_options (id, project_id, field, value, color) VALUES ('opt_s_1_1', '1', 'source', '竞品', '#3B82F6');
     INSERT OR IGNORE INTO topic_options (id, project_id, field, value, color) VALUES ('opt_s_1_2', '1', 'source', '灵感', '#8B5CF6');
   `);
+
+  normalizeTopicLibrarySortOrder();
 }
 
 // Ensure the db is initialized

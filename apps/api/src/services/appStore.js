@@ -229,18 +229,28 @@ export function deleteTopicOption(id) {
 }
 
 export function listTopicLibrary(project_id) {
-  return db.prepare("SELECT * FROM topic_library WHERE project_id = ? ORDER BY created_at DESC").all(project_id);
+  return db.prepare(`
+    SELECT *
+    FROM topic_library
+    WHERE project_id = ?
+    ORDER BY
+      COALESCE(sort_order, 2147483647) ASC,
+      created_at DESC
+  `).all(project_id);
 }
 
 export function createTopicLibraryItem(project_id, data) {
   const id = `tl_${nanoid(10)}`;
+  const nextSortOrder = db
+    .prepare("SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_sort_order FROM topic_library WHERE project_id = ?")
+    .get(project_id)?.next_sort_order ?? 0;
   db.prepare(`
     INSERT INTO topic_library (
-      id, project_id, name, judgment_result, judgment_reason, source,
+      id, project_id, name, sort_order, judgment_result, judgment_reason, source,
       ref_link, ref_platform, ref_content, ai_analysis_1, ai_analysis_2, ai_analysis_3
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    id, project_id, data.name, data.judgment_result || null, data.judgment_reason || null,
+    id, project_id, data.name, nextSortOrder, data.judgment_result || null, data.judgment_reason || null,
     data.source || null, data.ref_link || null, data.ref_platform || null,
     data.ref_content || null, data.ai_analysis_1 || null, data.ai_analysis_2 || null, data.ai_analysis_3 || null
   );
@@ -266,6 +276,27 @@ export function updateTopicLibraryItem(id, data) {
 export function deleteTopicLibraryItem(id) {
   const result = db.prepare("DELETE FROM topic_library WHERE id = ?").run(id);
   return result.changes > 0;
+}
+
+export function reorderTopicLibraryItems(project_id, orderedIds) {
+  const currentIds = listTopicLibrary(project_id).map((item) => item.id);
+  if (currentIds.length !== orderedIds.length) {
+    throw new Error("排序项目数量不一致");
+  }
+
+  const currentSet = new Set(currentIds);
+  if (orderedIds.some((id) => !currentSet.has(id))) {
+    throw new Error("存在不属于当前项目的选题");
+  }
+
+  const updateStmt = db.prepare("UPDATE topic_library SET sort_order = ? WHERE id = ? AND project_id = ?");
+  const tx = db.transaction(() => {
+    orderedIds.forEach((id, index) => {
+      updateStmt.run(index, id, project_id);
+    });
+  });
+  tx();
+  return listTopicLibrary(project_id);
 }
 
 export function addGenerationLog(log) {
