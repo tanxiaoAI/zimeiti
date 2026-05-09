@@ -846,6 +846,12 @@ textarea.input-field {
   min-width: 88px;
 }
 
+.topic-library-production-btn-entered {
+  color: #0f766e !important;
+  background: rgba(20, 184, 166, 0.10) !important;
+  border-color: rgba(20, 184, 166, 0.22) !important;
+}
+
 .topic-library-drag-head,
 .topic-library-drag-cell {
   width: 34px;

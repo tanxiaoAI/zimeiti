@@ -30,6 +30,7 @@ type TopicAiResultEntry = {
   usage?: any;
   estimated_cost_usd?: number | null;
   api_mode?: string;
+  agreed?: boolean;
 };
 
 type TopicAnalysisJobState = {
@@ -71,7 +72,8 @@ function parseStoredTopicAnalysisResult(fallbackModel: string, value: string | n
         error: parsed.error ? String(parsed.error) : null,
         usage: parsed.usage,
         estimated_cost_usd: typeof parsed.estimated_cost_usd === "number" ? parsed.estimated_cost_usd : null,
-        api_mode: parsed.api_mode ? String(parsed.api_mode) : undefined
+        api_mode: parsed.api_mode ? String(parsed.api_mode) : undefined,
+        agreed: Boolean(parsed.agreed)
       } as TopicAiResultEntry;
     }
   } catch (e) {
@@ -105,7 +107,8 @@ function stringifyTopicAnalysisResult(entry: TopicAiResultEntry | undefined) {
     error: entry.error || null,
     usage: entry.usage || null,
     estimated_cost_usd: entry.estimated_cost_usd ?? null,
-    api_mode: entry.api_mode || null
+    api_mode: entry.api_mode || null,
+    agreed: Boolean(entry.agreed)
   });
 }
 
@@ -573,6 +576,32 @@ export function TopicLibraryView({ activeAccountId, onEnterProduction, productio
     }
   };
 
+  const persistAgreeModel = async (topicId: string, agreedModel: string) => {
+    const topic = topics.find((item) => item.id === topicId);
+    if (!topic) return;
+    const storedResults = buildStoredAnalysisResults(topic, topicModels);
+    const nextResults = topicModels.map((model, index) => {
+      const entry = storedResults[index] || storedResults.find((it) => it.model === model) || { model, result: "", error: null };
+      return { ...entry, model, agreed: entry.model === agreedModel ? !entry.agreed : false } as TopicAiResultEntry;
+    });
+    updateTopicAnalysisJob(topicId, () => ({
+      analyzing: false,
+      results: nextResults
+    }));
+    const payload = {
+      ai_analysis_1: stringifyTopicAnalysisResult(nextResults[0]),
+      ai_analysis_2: stringifyTopicAnalysisResult(nextResults[1]),
+      ai_analysis_3: stringifyTopicAnalysisResult(nextResults[2])
+    };
+    if (typeof handleBatchUpdateRecord === "function") {
+      await handleBatchUpdateRecord(topicId, payload);
+    } else {
+      await handleUpdateRecord(topicId, 'ai_analysis_1', payload.ai_analysis_1);
+      await handleUpdateRecord(topicId, 'ai_analysis_2', payload.ai_analysis_2);
+      await handleUpdateRecord(topicId, 'ai_analysis_3', payload.ai_analysis_3);
+    }
+  };
+
   return (
     <div>
       <div className="page-header flex justify-between items-start mb-4">
@@ -722,7 +751,7 @@ export function TopicLibraryView({ activeAccountId, onEnterProduction, productio
                           <Button
                             variant="ghost"
                             size="sm"
-                            className="topic-library-action topic-library-action-view-analysis topic-library-production-btn"
+                            className={`topic-library-action topic-library-production-btn ${hasEnteredProduction ? "topic-library-production-btn-entered" : "topic-library-action-view-analysis"}`}
                             onClick={() => onEnterProduction?.(topic)}
                           >
                             {hasEnteredProduction ? "查看内容生产" : "进入内容生产"}
@@ -834,6 +863,7 @@ export function TopicLibraryView({ activeAccountId, onEnterProduction, productio
         onClose={() => setAiDrawer(null)} 
         analysisState={aiDrawer?.id ? topicAnalysisJobs[aiDrawer.id] : undefined}
         onAnalyze={startTopicAnalysis}
+        onToggleAgree={persistAgreeModel}
         systemInstruction={topicPrompt}
         models={topicModels}
         onModelsChange={persistTopicModels}
@@ -929,7 +959,7 @@ function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
   );
 }
 
-function TopicAiDrawer({ topic, onClose, analysisState, onAnalyze, systemInstruction, models, onModelsChange }: any) {
+function TopicAiDrawer({ topic, onClose, analysisState, onAnalyze, onToggleAgree, systemInstruction, models, onModelsChange }: any) {
   const [promptDialogOpen, setPromptDialogOpen] = useState(false);
   const normalizedRefContent = String(topic?.ref_content || "").trim() || "无";
 
@@ -1035,13 +1065,27 @@ function TopicAiDrawer({ topic, onClose, analysisState, onAnalyze, systemInstruc
             {models.map((model, i) => {
               const res = results[i] || results.find(r => r.model === model);
               const hasVisibleContent = Boolean(res?.error || res?.result);
+              const isAgreed = Boolean(res?.agreed);
               return (
-                <div key={`${i}-${model}`} className="flex-1 bg-card border border-border rounded-lg flex flex-col overflow-hidden">
+                <div
+                  key={`${i}-${model}`}
+                  className="flex-1 bg-card border border-border rounded-lg flex flex-col overflow-hidden"
+                  style={isAgreed ? { background: 'rgba(16,185,129,0.08)', borderColor: 'rgba(16,185,129,0.25)' } : undefined}
+                >
                   <div className="bg-muted p-3 border-b border-border font-semibold text-sm flex justify-between items-center">
                     <span>{model}</span>
                     {analyzing ? <Badge variant="secondary">分析中</Badge> : null}
                     {res?.error ? <Badge variant="destructive">Error</Badge> : null}
-                    {!analyzing && !res?.error && res?.result ? <Badge variant="default" className="bg-primary/10 text-primary hover:bg-primary/20">Success</Badge> : null}
+                    {!analyzing && !res?.error && res?.result ? (
+                      <label className="flex items-center gap-2 text-xs cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={isAgreed}
+                          onChange={() => onToggleAgree?.(topic.id, model)}
+                        />
+                        <span style={isAgreed ? { color: '#15803d', fontWeight: 700 } : { color: 'var(--text-muted)' }}>认同</span>
+                      </label>
+                    ) : null}
                   </div>
                   <ScrollArea className="flex-1 p-4">
                     {!hasVisibleContent && analyzing ? (

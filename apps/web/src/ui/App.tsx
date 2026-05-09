@@ -358,6 +358,24 @@ type GenerationLogGroup = {
   totalEstimatedCost: number;
 };
 
+type ContentProductionJobState = {
+  generating: boolean;
+  result: string;
+  error: string;
+};
+
+type ContentProductionRunParams = {
+  accountId: string;
+  topicId: string;
+  stepId: string;
+  stepLabel: string;
+  inputField: string;
+  resultField: string;
+  systemInstruction: string;
+  model: string;
+  inputContent: string;
+};
+
 function getContentProductionStepConfig(accountId: string, stepId: string) {
   const model =
     readScopedConfig(accountId, "content_production", `${stepId}_model`) ||
@@ -368,6 +386,44 @@ function getContentProductionStepConfig(accountId: string, stepId: string) {
     readScopedConfig(accountId, "content_production", "prompt") ||
     CONTENT_PRODUCTION_DEFAULT_PROMPT;
   return { model, prompt };
+}
+
+function getContentProductionJobKey(accountId: string, topicId: string, stepId: string) {
+  return `${accountId}:${topicId}:${stepId}`;
+}
+
+function parseStoredTopicAnalysisResultForPrefill(value: string | null | undefined) {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(String(value));
+    if (parsed && typeof parsed === "object") {
+      return {
+        result: typeof parsed.result === "string" ? parsed.result.trim() : "",
+        error: parsed.error ? String(parsed.error) : "",
+        agreed: Boolean(parsed.agreed)
+      };
+    }
+  } catch {
+    // keep backward compatibility with plain text storage
+  }
+  return {
+    result: String(value || "").trim(),
+    error: "",
+    agreed: false
+  };
+}
+
+function buildTopicAdjustPrefill(topic: any) {
+  const agreedResults = ["ai_analysis_1", "ai_analysis_2", "ai_analysis_3"]
+    .map((field) => parseStoredTopicAnalysisResultForPrefill(topic?.[field]))
+    .filter((item) => item?.agreed && item?.result && !item?.error)
+    .map((item, index) => `AI分析结果${index + 1}：\n${item?.result}`);
+
+  return [
+    `选题名称：\n${String(topic?.name || "").trim() || "无"}`,
+    `参考文案：\n${String(topic?.ref_content || "").trim() || "无"}`,
+    agreedResults.length ? agreedResults.join("\n\n") : "AI分析结果1、2、3（被勾选的内容依次填充）：\n无"
+  ].join("\n\n");
 }
 
 function truncateTopicTitle(title: string, maxLength = 12) {
@@ -462,6 +518,8 @@ export default function App() {
   const [activeNav, setActiveNav] = useState("freeChat");
   const [activeTopic, setActiveTopic] = useState<any>(null);
   const [productionTopicIds, setProductionTopicIds] = useState<string[]>([]);
+  const [contentProductionJobs, setContentProductionJobs] = useState<Record<string, ContentProductionJobState>>({});
+  const [pendingPrefillTopicId, setPendingPrefillTopicId] = useState("");
   const [isConfigOpen, setIsConfigOpen] = useState(false);
   const [isAccountDropdownOpen, setIsAccountDropdownOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -484,9 +542,12 @@ export default function App() {
     setActiveTopic(null);
     if (!activeAccountId) {
       setProductionTopicIds([]);
+      setContentProductionJobs({});
+      setPendingPrefillTopicId("");
       return;
     }
     setProductionTopicIds(readScopedJsonConfig<string[]>(activeAccountId, "content_production", "topic_ids", []));
+    setContentProductionJobs(readScopedJsonConfig<Record<string, ContentProductionJobState>>(activeAccountId, "content_production", "jobs", {}));
   }, [activeAccountId]);
 
   const fetchAccounts = async () => {
@@ -573,11 +634,97 @@ export default function App() {
   };
 
   const handleTopicSelect = (topic: any) => {
-    const nextIds = Array.from(new Set([...productionTopicIds, topic.id]));
+    const isNewEntry = !productionTopicIds.includes(topic.id);
+    const nextIds = isNewEntry ? Array.from(new Set([...productionTopicIds, topic.id])) : productionTopicIds;
     setProductionTopicIds(nextIds);
     writeScopedJsonConfig(activeAccountId, "content_production", "topic_ids", nextIds);
+    setPendingPrefillTopicId(isNewEntry ? topic.id : "");
     setActiveTopic(topic);
     setActiveNav("content_production");
+  };
+
+  const updateContentProductionJobs = (accountId: string, updater: (prev: Record<string, ContentProductionJobState>) => Record<string, ContentProductionJobState>) => {
+    setContentProductionJobs((prev) => {
+      const next = updater(prev);
+      if (accountId) {
+        writeScopedJsonConfig(accountId, "content_production", "jobs", next);
+      }
+      return next;
+    });
+  };
+
+  const runContentProductionJob = async (params: ContentProductionRunParams) => {
+    const jobKey = getContentProductionJobKey(params.accountId, params.topicId, params.stepId);
+    updateContentProductionJobs(params.accountId, (prev) => ({
+      ...prev,
+      [jobKey]: {
+        generating: true,
+        result: prev[jobKey]?.result || "",
+        error: ""
+      }
+    }));
+
+    try {
+      const res = await fetch(`/api/v1/projects/${params.accountId}/topic-library/${params.topicId}/content-production/generate`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-API-Key": "demo-key"
+        },
+        body: JSON.stringify({
+          stepId: params.stepId,
+          stepLabel: params.stepLabel,
+          systemInstruction: params.systemInstruction,
+          model: params.model,
+          inputContent: params.inputContent
+        })
+      });
+      const payload = await readApiResponse(res);
+      if (!res.ok || payload.json?.success === false || payload.json?.error) {
+        throw new Error(payload.json?.message || payload.json?.error?.message || "生成失败");
+      }
+      const nextResult = String(payload.json?.data?.result || "");
+
+      const saveRes = await fetch(`/api/v1/projects/${params.accountId}/topic-library/${params.topicId}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "X-API-Key": "demo-key"
+        },
+        body: JSON.stringify({
+          [params.inputField]: params.inputContent,
+          [params.resultField]: nextResult
+        })
+      });
+      const savedPayload = await readApiResponse(saveRes);
+      if (!saveRes.ok || savedPayload.json?.success === false || savedPayload.json?.error) {
+        throw new Error(savedPayload.json?.message || savedPayload.json?.error?.message || "生成结果保存失败");
+      }
+
+      updateContentProductionJobs(params.accountId, (prev) => ({
+        ...prev,
+        [jobKey]: {
+          generating: false,
+          result: nextResult,
+          error: ""
+        }
+      }));
+
+      return {
+        result: nextResult,
+        updatedTopic: savedPayload.json?.data || null
+      };
+    } catch (error: any) {
+      updateContentProductionJobs(params.accountId, (prev) => ({
+        ...prev,
+        [jobKey]: {
+          generating: false,
+          result: prev[jobKey]?.result || "",
+          error: error?.message || "生成失败"
+        }
+      }));
+      throw error;
+    }
   };
 
   const renderContent = () => {
@@ -587,7 +734,7 @@ export default function App() {
       case "teardown": return <TeardownView activeAccountId={activeAccountId} />;
       case "topic_library": return <TopicLibraryView activeAccountId={activeAccountId} onEnterProduction={handleTopicSelect} productionTopicIds={productionTopicIds} />;
       case "generate_cover": return <GenerateCoverView activeAccountId={activeAccountId} />;
-      case "content_production": return <EditorView activeAccountId={activeAccountId} topic={activeTopic} onTopicChange={setActiveTopic} productionTopicIds={productionTopicIds} />;
+      case "content_production": return <EditorView activeAccountId={activeAccountId} topic={activeTopic} onTopicChange={setActiveTopic} productionTopicIds={productionTopicIds} contentProductionJobs={contentProductionJobs} onRunJob={runContentProductionJob} pendingPrefillTopicId={pendingPrefillTopicId} onConsumePrefill={() => setPendingPrefillTopicId("")} />;
       case "generation_logs": return <GenerationLogsView activeAccountId={activeAccountId} />;
       case "analytics": return <AnalyticsView />;
       case "config": return <ConfigView activeAccountId={activeAccountId} />;
@@ -2330,7 +2477,25 @@ function TopicsView({ onSelectTopic }: { onSelectTopic: (topic: any) => void }) 
   );
 }
 
-function EditorView({ activeAccountId, topic, onTopicChange, productionTopicIds }: { activeAccountId: string; topic: any; onTopicChange: (topic: any | null) => void; productionTopicIds: string[] }) {
+function EditorView({
+  activeAccountId,
+  topic,
+  onTopicChange,
+  productionTopicIds,
+  contentProductionJobs,
+  onRunJob,
+  pendingPrefillTopicId,
+  onConsumePrefill
+}: {
+  activeAccountId: string;
+  topic: any;
+  onTopicChange: (topic: any | null) => void;
+  productionTopicIds: string[];
+  contentProductionJobs: Record<string, ContentProductionJobState>;
+  onRunJob: (params: ContentProductionRunParams) => Promise<{ result: string; updatedTopic: any | null }>;
+  pendingPrefillTopicId: string;
+  onConsumePrefill: () => void;
+}) {
   const [topics, setTopics] = useState<any[]>([]);
   const [topicsLoading, setTopicsLoading] = useState(false);
   const [activeStepId, setActiveStepId] = useState(CONTENT_PRODUCTION_STEPS[0].id);
@@ -2339,17 +2504,18 @@ function EditorView({ activeAccountId, topic, onTopicChange, productionTopicIds 
   const [promptValue, setPromptValue] = useState(CONTENT_PRODUCTION_DEFAULT_PROMPT);
   const [inputDraft, setInputDraft] = useState("");
   const [resultDraft, setResultDraft] = useState("");
-  const [savingInput, setSavingInput] = useState(false);
-  const [savingResult, setSavingResult] = useState(false);
-  const [generating, setGenerating] = useState(false);
   const [statusText, setStatusText] = useState("");
   const [configOpen, setConfigOpen] = useState(false);
 
   const activeStep = CONTENT_PRODUCTION_STEPS.find((item) => item.id === activeStepId) || CONTENT_PRODUCTION_STEPS[0];
   const visibleTopics = topics.filter((item) => productionTopicIds.includes(item.id));
   const selectedTopic = visibleTopics.find((item) => item.id === selectedTopicId) || null;
-  const stepInputHeight = activeStep.id === "topic_adjust" ? 420 : 320;
-  const stepResultHeight = activeStep.id === "topic_adjust" ? 420 : 320;
+  const stepInputHeight = 420;
+  const stepResultHeight = 420;
+  const currentJobKey = selectedTopic ? getContentProductionJobKey(activeAccountId, selectedTopic.id, activeStep.id) : "";
+  const currentJob = currentJobKey ? contentProductionJobs[currentJobKey] : undefined;
+  const isGenerating = Boolean(currentJob?.generating);
+  const hasGeneratedResult = Boolean(String(selectedTopic?.[activeStep.resultField] || currentJob?.result || "").trim());
 
   const fetchTopics = async () => {
     if (!activeAccountId) return;
@@ -2405,8 +2571,22 @@ function EditorView({ activeAccountId, topic, onTopicChange, productionTopicIds 
       return;
     }
     setInputDraft(String(selectedTopic[activeStep.inputField] || ""));
-    setResultDraft(String(selectedTopic[activeStep.resultField] || ""));
-  }, [selectedTopic, activeStep]);
+    setResultDraft(String(selectedTopic[activeStep.resultField] || currentJob?.result || ""));
+  }, [selectedTopic, activeStep, currentJob?.result]);
+
+  useEffect(() => {
+    if (!selectedTopic || activeStep.id !== "topic_adjust") return;
+    if (pendingPrefillTopicId !== selectedTopic.id) return;
+    const existingInput = String(selectedTopic[activeStep.inputField] || "").trim();
+    if (existingInput) {
+      onConsumePrefill();
+      return;
+    }
+    const prefillText = buildTopicAdjustPrefill(selectedTopic);
+    setInputDraft(prefillText);
+    setStatusText("已自动带入选题名称、参考文案和勾选的 AI 分析结果");
+    onConsumePrefill();
+  }, [selectedTopic?.id, pendingPrefillTopicId, activeStep.id]);
 
   const updateTopicInState = (updated: any) => {
     setTopics((prev) => prev.map((item) => item.id === updated.id ? updated : item));
@@ -2415,30 +2595,23 @@ function EditorView({ activeAccountId, topic, onTopicChange, productionTopicIds 
     }
   };
 
-  const persistStepPatch = async (patch: Record<string, any>, savingKind: "input" | "result" | "both") => {
+  const persistStepPatch = async (patch: Record<string, any>) => {
     if (!selectedTopic) return null;
-    try {
-      if (savingKind === "input" || savingKind === "both") setSavingInput(true);
-      if (savingKind === "result" || savingKind === "both") setSavingResult(true);
-      const res = await fetch(`/api/v1/projects/${activeAccountId}/topic-library/${selectedTopic.id}`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          "X-API-Key": "demo-key"
-        },
-        body: JSON.stringify(patch)
-      });
-      const payload = await readApiResponse(res);
-      if (!res.ok || payload.json?.success === false || payload.json?.error) {
-        throw new Error(payload.json?.message || payload.json?.error?.message || "保存失败");
-      }
-      const updated = payload.json?.data;
-      if (updated) updateTopicInState(updated);
-      return updated;
-    } finally {
-      setSavingInput(false);
-      setSavingResult(false);
+    const res = await fetch(`/api/v1/projects/${activeAccountId}/topic-library/${selectedTopic.id}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "X-API-Key": "demo-key"
+      },
+      body: JSON.stringify(patch)
+    });
+    const payload = await readApiResponse(res);
+    if (!res.ok || payload.json?.success === false || payload.json?.error) {
+      throw new Error(payload.json?.message || payload.json?.error?.message || "保存失败");
     }
+    const updated = payload.json?.data;
+    if (updated) updateTopicInState(updated);
+    return updated;
   };
 
   const handleTopicSwitch = (nextTopic: any) => {
@@ -2458,53 +2631,76 @@ function EditorView({ activeAccountId, topic, onTopicChange, productionTopicIds 
     setStatusText(`${activeStep.title} 的默认提示词已保存`);
   };
 
-  const handleSaveInput = async () => {
+  useEffect(() => {
     if (!selectedTopic) return;
-    await persistStepPatch({ [activeStep.inputField]: inputDraft }, "input");
-    setStatusText("当前流程输入内容已保存");
-  };
+    const savedValue = String(selectedTopic[activeStep.inputField] || "");
+    if (inputDraft === savedValue) return;
+    const timer = window.setTimeout(async () => {
+      try {
+        await persistStepPatch({ [activeStep.inputField]: inputDraft });
+        setStatusText(`${activeStep.title} 输入内容已自动保存`);
+      } catch (e: any) {
+        console.error(e);
+        setStatusText(`${activeStep.title} 输入内容自动保存失败：${e?.message || "未知错误"}`);
+      }
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [inputDraft, selectedTopic?.id, activeStep.id]);
 
-  const handleSaveResult = async () => {
+  useEffect(() => {
     if (!selectedTopic) return;
-    await persistStepPatch({ [activeStep.resultField]: resultDraft }, "result");
-    setStatusText("当前流程生成结果已保存");
-  };
+    const savedValue = String(selectedTopic[activeStep.resultField] || currentJob?.result || "");
+    if (resultDraft === savedValue) return;
+    const timer = window.setTimeout(async () => {
+      try {
+        await persistStepPatch({ [activeStep.resultField]: resultDraft });
+        setStatusText(`${activeStep.title} 生成结果已自动保存`);
+      } catch (e: any) {
+        console.error(e);
+        setStatusText(`${activeStep.title} 生成结果自动保存失败：${e?.message || "未知错误"}`);
+      }
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [resultDraft, selectedTopic?.id, activeStep.id, currentJob?.result]);
 
   const handleGenerate = async () => {
     if (!selectedTopic) return;
     try {
-      setGenerating(true);
       setStatusText("");
-      const res = await fetch(`/api/v1/projects/${activeAccountId}/topic-library/${selectedTopic.id}/content-production/generate`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-API-Key": "demo-key"
-        },
-        body: JSON.stringify({
-          stepId: activeStep.id,
-          stepLabel: activeStep.title,
-          systemInstruction: promptValue,
-          model: selectedModel,
-          inputContent: inputDraft
-        })
+      const runResult = await onRunJob({
+        accountId: activeAccountId,
+        topicId: selectedTopic.id,
+        stepId: activeStep.id,
+        stepLabel: activeStep.title,
+        inputField: activeStep.inputField,
+        resultField: activeStep.resultField,
+        systemInstruction: promptValue,
+        model: selectedModel,
+        inputContent: inputDraft
       });
-      const payload = await readApiResponse(res);
-      if (!res.ok || payload.json?.success === false || payload.json?.error) {
-        throw new Error(payload.json?.message || payload.json?.error?.message || "生成失败");
-      }
-      const nextResult = String(payload.json?.data?.result || "");
-      setResultDraft(nextResult);
-      await persistStepPatch({
-        [activeStep.inputField]: inputDraft,
-        [activeStep.resultField]: nextResult
-      }, "both");
+      setResultDraft(runResult.result);
+      if (runResult.updatedTopic) updateTopicInState(runResult.updatedTopic);
       setStatusText("已生成并保存当前流程结果");
     } catch (e: any) {
       console.error(e);
       alert(`内容生产异常：${e.message || "未知错误"}`);
-    } finally {
-      setGenerating(false);
+    }
+  };
+
+  const handleFillNextStep = async () => {
+    if (!selectedTopic || !resultDraft.trim()) return;
+    const currentIndex = CONTENT_PRODUCTION_STEPS.findIndex((item) => item.id === activeStep.id);
+    const nextStep = CONTENT_PRODUCTION_STEPS[currentIndex + 1];
+    if (!nextStep) return;
+    try {
+      const updated = await persistStepPatch({ [nextStep.inputField]: resultDraft });
+      if (updated) updateTopicInState(updated);
+      setActiveStepId(nextStep.id);
+      setInputDraft(resultDraft);
+      setStatusText(`已填入 ${nextStep.title} 的输入内容`);
+    } catch (e: any) {
+      console.error(e);
+      alert(`填入下一步失败：${e?.message || "未知错误"}`);
     }
   };
 
@@ -2609,9 +2805,6 @@ function EditorView({ activeAccountId, topic, onTopicChange, productionTopicIds 
                   <button className="btn-ghost" onClick={() => setConfigOpen(true)}>
                     <Settings size={15} /> 配置
                   </button>
-                  <button className="btn-ghost" onClick={handleSaveInput} disabled={savingInput}>
-                    {savingInput ? "保存中..." : "保存输入"}
-                  </button>
                 </div>
               </div>
               <textarea
@@ -2627,12 +2820,14 @@ function EditorView({ activeAccountId, topic, onTopicChange, productionTopicIds 
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
                 <h3 style={{ margin: 0 }}>{activeStep.title} · 生成结果</h3>
                 <div style={{ display: 'flex', gap: 8 }}>
-                  <button className="btn-primary" onClick={handleGenerate} disabled={generating}>
-                    <Sparkles size={15} /> {generating ? "生成中..." : "开始生成"}
+                  <button className="btn-primary" onClick={handleGenerate} disabled={isGenerating}>
+                    <Sparkles size={15} /> {isGenerating ? "生成中" : (hasGeneratedResult ? "重新生成" : "开始生成")}
                   </button>
-                  <button className="btn-ghost" onClick={handleSaveResult} disabled={savingResult}>
-                    {savingResult ? "保存中..." : "保存结果"}
-                  </button>
+                  {activeStep.id === "topic_adjust" ? (
+                    <button className="btn-ghost" onClick={handleFillNextStep} disabled={!resultDraft.trim()}>
+                      填入下一步
+                    </button>
+                  ) : null}
                 </div>
               </div>
               <textarea
