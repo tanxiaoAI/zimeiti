@@ -1,5 +1,5 @@
-import React, { useMemo, useState, useEffect } from "react";
-import { Plus, Settings, Trash2, FileText, Loader2, Sparkles, Link2, History, RefreshCw, Clock, DollarSign, Bot } from 'lucide-react';
+import React, { useState, useEffect } from "react";
+import { Plus, Settings, Trash2, FileText, Loader2, Sparkles, Link2 } from 'lucide-react';
 import { apiGet, apiPost, apiPut, apiDelete } from './api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -22,41 +22,6 @@ const MODEL_OPTIONS = [
 const TOPIC_LIBRARY_PROMPT_FALLBACK = "你是一个资深自媒体内容分析师，请对提供的文案进行深度拆解分析。";
 const TOPIC_LIBRARY_DEFAULT_MODELS = ["gpt-5.5", "claude-opus-4-6", "gpts-gemini-3.1-pro-preview"];
 const ANALYSIS_RESULT_FIELDS = ["ai_analysis_1", "ai_analysis_2", "ai_analysis_3"] as const;
-
-type TopicAnalysisLogItem = {
-  id: string;
-  request_id: string;
-  status: string;
-  created_at: string;
-  request_json?: {
-    model?: string;
-    topic_name?: string;
-    ref_content_preview?: string;
-    prompt_preview?: string;
-  } | null;
-  response_json?: {
-    actual_model?: string;
-    api_mode?: string;
-    latency_ms?: number;
-    usage?: {
-      prompt_tokens?: number;
-      completion_tokens?: number;
-      total_tokens?: number;
-    } | null;
-    estimated_cost_usd?: number | null;
-    result_preview?: string;
-    error?: string;
-  } | null;
-};
-
-type TopicAnalysisLogGroup = {
-  requestId: string;
-  createdAt: string;
-  topicName: string;
-  refContentPreview: string;
-  items: TopicAnalysisLogItem[];
-  totalEstimatedCost: number;
-};
 
 type TopicAiResultEntry = {
   model: string;
@@ -93,60 +58,6 @@ function formatDateTime(isoStr: string) {
   return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
-function formatUsdCost(value?: number | null) {
-  if (typeof value !== "number" || Number.isNaN(value)) return "待补充";
-  if (value === 0) return "$0.0000";
-  return `$${value.toFixed(value >= 0.1 ? 2 : 4)}`;
-}
-
-function formatLatency(value?: number | null) {
-  if (typeof value !== "number" || Number.isNaN(value)) return "未记录";
-  if (value < 1000) return `${value} ms`;
-  return `${(value / 1000).toFixed(1)} 秒`;
-}
-
-function formatUsageText(usage?: TopicAnalysisLogItem["response_json"] extends infer T ? any : never) {
-  if (!usage) return "Token 未记录";
-  const prompt = Number(usage.prompt_tokens || 0);
-  const completion = Number(usage.completion_tokens || 0);
-  const total = Number(usage.total_tokens || prompt + completion);
-  return `输入 ${prompt} / 输出 ${completion} / 总计 ${total} tokens`;
-}
-
-function groupTopicAnalysisLogs(logs: TopicAnalysisLogItem[]): TopicAnalysisLogGroup[] {
-  const map = new Map<string, TopicAnalysisLogGroup>();
-
-  logs.forEach((item) => {
-    const key = item.request_id || item.id;
-    const existing = map.get(key);
-    const cost = Number(item.response_json?.estimated_cost_usd || 0);
-    if (!existing) {
-      map.set(key, {
-        requestId: key,
-        createdAt: item.created_at,
-        topicName: item.request_json?.topic_name || "未命名选题",
-        refContentPreview: item.request_json?.ref_content_preview || "",
-        items: [item],
-        totalEstimatedCost: cost
-      });
-      return;
-    }
-
-    existing.items.push(item);
-    existing.totalEstimatedCost += cost;
-    if (new Date(item.created_at).getTime() > new Date(existing.createdAt).getTime()) {
-      existing.createdAt = item.created_at;
-    }
-  });
-
-  return Array.from(map.values())
-    .map((group) => ({
-      ...group,
-      items: [...group.items].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()),
-      totalEstimatedCost: Number(group.totalEstimatedCost.toFixed(6))
-    }))
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-}
 
 function parseStoredTopicAnalysisResult(fallbackModel: string, value: string | null | undefined) {
   if (!value) return null;
@@ -360,11 +271,6 @@ export function TopicLibraryView({ activeAccountId, onEnterProduction, productio
   const [copyDrawer, setCopyDrawer] = useState<any | null>(null);
   const [aiDrawer, setAiDrawer] = useState<any | null>(null);
   const [topicAnalysisJobs, setTopicAnalysisJobs] = useState<Record<string, TopicAnalysisJobState>>({});
-  const [analysisLogOpen, setAnalysisLogOpen] = useState(false);
-  const [analysisLogs, setAnalysisLogs] = useState<TopicAnalysisLogItem[]>([]);
-  const [analysisLogsLoading, setAnalysisLogsLoading] = useState(false);
-  const [analysisLogsError, setAnalysisLogsError] = useState("");
-  const [analysisLogsVersion, setAnalysisLogsVersion] = useState(0);
   const [analysisConfigOpen, setAnalysisConfigOpen] = useState(false);
   const [newOption, setNewOption] = useState({ value: "", color: "#3B82F6" });
   const [topicPromptDraft, setTopicPromptDraft] = useState(TOPIC_LIBRARY_PROMPT_FALLBACK);
@@ -664,35 +570,7 @@ export function TopicLibraryView({ activeAccountId, onEnterProduction, productio
         results: prev?.results?.length ? prev.results : storedResults
       }));
       alert("分析异常: " + (e?.message || "未知错误"));
-    } finally {
-      notifyAnalysisLogsUpdated();
     }
-  };
-
-  const fetchAnalysisLogs = async () => {
-    if (!activeAccountId) return;
-    setAnalysisLogsLoading(true);
-    setAnalysisLogsError("");
-    try {
-      const data: any = await apiGet(`/api/v1/projects/${activeAccountId}/topic-library/analyze-logs?limit=100`, "demo-key");
-      setAnalysisLogs(data.items || []);
-    } catch (e: any) {
-      console.error(e);
-      setAnalysisLogsError(e.message || "加载日志失败");
-    } finally {
-      setAnalysisLogsLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    if (!analysisLogOpen || !activeAccountId) return;
-    fetchAnalysisLogs();
-  }, [analysisLogOpen, activeAccountId, analysisLogsVersion]);
-
-  const groupedAnalysisLogs = useMemo(() => groupTopicAnalysisLogs(analysisLogs), [analysisLogs]);
-
-  const notifyAnalysisLogsUpdated = () => {
-    setAnalysisLogsVersion(prev => prev + 1);
   };
 
   return (
@@ -701,10 +579,6 @@ export function TopicLibraryView({ activeAccountId, onEnterProduction, productio
         <div>
           <div className="flex items-center gap-2">
             <h2 className="text-xl font-semibold tracking-tight">选题库</h2>
-            <Button variant="outline" size="sm" className="h-8 px-3" onClick={() => setAnalysisLogOpen(true)}>
-              <History size={14} className="mr-1.5" />
-              分析费用日志
-            </Button>
           </div>
           <p className="text-muted-foreground text-xs">以多维表格形式管理选题，支持参考文案提取与多模型 AI 分析。</p>
         </div>
@@ -964,15 +838,6 @@ export function TopicLibraryView({ activeAccountId, onEnterProduction, productio
         models={topicModels}
         onModelsChange={persistTopicModels}
       />
-
-      <TopicAnalysisLogsDrawer
-        open={analysisLogOpen}
-        onClose={() => setAnalysisLogOpen(false)}
-        loading={analysisLogsLoading}
-        error={analysisLogsError}
-        groups={groupedAnalysisLogs}
-        onRefresh={fetchAnalysisLogs}
-      />
     </div>
   );
 }
@@ -1222,152 +1087,4 @@ function TopicAiDrawer({ topic, onClose, analysisState, onAnalyze, systemInstruc
   );
 }
 
-function TopicAnalysisLogsDrawer({ open, onClose, loading, error, groups, onRefresh }: {
-  open: boolean;
-  onClose: () => void;
-  loading: boolean;
-  error: string;
-  groups: TopicAnalysisLogGroup[];
-  onRefresh: () => void;
-}) {
-  const totalCalls = groups.reduce((sum, group) => sum + group.items.length, 0);
-  const totalCost = groups.reduce((sum, group) => sum + group.totalEstimatedCost, 0);
-  const successCount = groups.reduce((sum, group) => sum + group.items.filter(item => item.status === "ok").length, 0);
-  const latestTime = groups[0]?.createdAt || "";
-
-  return (
-    <Sheet open={open} onOpenChange={(next) => !next && onClose()}>
-      <SheetContent className="sm:max-w-[980px] w-[78vw] overflow-y-auto">
-        <SheetHeader className="mb-6">
-          <SheetTitle className="flex items-center justify-between gap-3">
-            <span>分析费用日志</span>
-            <Button type="button" variant="outline" size="sm" onClick={onRefresh}>
-              <RefreshCw size={14} className="mr-1.5" />
-              刷新
-            </Button>
-          </SheetTitle>
-          <SheetDescription>
-            这里按“每次分析”给你看清楚：什么时候分析了哪个选题、调用了什么模型、每个模型大概花了多少钱。
-          </SheetDescription>
-        </SheetHeader>
-
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 mb-6">
-          <div className="rounded-xl border border-border bg-muted/20 p-4">
-            <div className="text-xs text-muted-foreground mb-2">一共分析了几次</div>
-            <div className="text-2xl font-semibold">{groups.length}</div>
-            <div className="text-xs text-muted-foreground mt-1">按每次点击分析分组</div>
-          </div>
-          <div className="rounded-xl border border-border bg-muted/20 p-4">
-            <div className="text-xs text-muted-foreground mb-2">一共调用了几个模型</div>
-            <div className="text-2xl font-semibold">{totalCalls}</div>
-            <div className="text-xs text-muted-foreground mt-1">每个模型单独记账</div>
-          </div>
-          <div className="rounded-xl border border-border bg-muted/20 p-4">
-            <div className="text-xs text-muted-foreground mb-2">累计预估花费</div>
-            <div className="text-2xl font-semibold">{formatUsdCost(totalCost)}</div>
-            <div className="text-xs text-muted-foreground mt-1">以日志里已记录的估算费用汇总</div>
-          </div>
-          <div className="rounded-xl border border-border bg-muted/20 p-4">
-            <div className="text-xs text-muted-foreground mb-2">最近一次分析时间</div>
-            <div className="text-base font-semibold">{latestTime ? formatDateTime(latestTime) : "--"}</div>
-            <div className="text-xs text-muted-foreground mt-1">成功记录 {successCount} 次模型调用</div>
-          </div>
-        </div>
-
-        {loading ? (
-          <div className="flex items-center justify-center rounded-xl border border-dashed border-border min-h-[240px] text-muted-foreground gap-2">
-            <Loader2 size={18} className="spin" />
-            正在加载费用日志...
-          </div>
-        ) : error ? (
-          <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
-            日志加载失败：{error}
-          </div>
-        ) : groups.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-border bg-muted/10 p-8 text-center text-muted-foreground">
-            还没有分析日志。你在选题库点一次 AI 分析后，这里就会开始记录。
-          </div>
-        ) : (
-          <div className="flex flex-col gap-4">
-            {groups.map((group) => (
-              <div key={group.requestId} className="rounded-2xl border border-border bg-card p-5 shadow-sm">
-                <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
-                  <div>
-                    <div className="text-sm font-semibold text-foreground">
-                      {formatDateTime(group.createdAt)} 发起了一次【选题库 AI 分析】
-                    </div>
-                    <div className="text-sm text-muted-foreground mt-1">
-                      分析的选题：{group.topicName || "未命名选题"}
-                    </div>
-                    {group.refContentPreview ? (
-                      <div className="text-xs text-muted-foreground mt-2">
-                        参考文案摘要：{group.refContentPreview}
-                      </div>
-                    ) : null}
-                  </div>
-                  <div className="rounded-xl bg-primary/5 px-4 py-3 text-right min-w-[170px]">
-                    <div className="text-xs text-muted-foreground">这次分析约花费</div>
-                    <div className="text-xl font-semibold text-primary">{formatUsdCost(group.totalEstimatedCost)}</div>
-                    <div className="text-xs text-muted-foreground mt-1">共调用 {group.items.length} 个模型</div>
-                  </div>
-                </div>
-
-                <div className="grid gap-3">
-                  {group.items.map((item) => {
-                    const usage = item.response_json?.usage;
-                    const previewText = item.status === "ok"
-                      ? (item.response_json?.result_preview || "这次调用已完成，但没有记录结果摘要。")
-                      : (item.response_json?.error || "这次调用失败，未返回更多错误信息。");
-
-                    return (
-                      <div key={item.id} className="rounded-xl border border-border bg-muted/10 p-4">
-                        <div className="flex flex-wrap items-center justify-between gap-3">
-                          <div className="flex items-center gap-2">
-                            <Bot size={15} className="text-primary" />
-                            <span className="font-semibold">{item.request_json?.model || "未记录模型"}</span>
-                            <Badge variant={item.status === "ok" ? "default" : "destructive"} className={item.status === "ok" ? "bg-primary/10 text-primary hover:bg-primary/20" : ""}>
-                              {item.status === "ok" ? "调用成功" : "调用失败"}
-                            </Badge>
-                          </div>
-                          <div className="text-sm font-semibold text-foreground flex items-center gap-1">
-                            <DollarSign size={14} />
-                            {formatUsdCost(item.response_json?.estimated_cost_usd)}
-                          </div>
-                        </div>
-
-                        <div className="grid grid-cols-1 gap-2 md:grid-cols-3 mt-3 text-sm">
-                          <div className="rounded-lg bg-background px-3 py-2">
-                            <div className="text-xs text-muted-foreground mb-1">调用时间</div>
-                            <div>{formatDateTime(item.created_at)}</div>
-                          </div>
-                          <div className="rounded-lg bg-background px-3 py-2">
-                            <div className="text-xs text-muted-foreground mb-1">耗时</div>
-                            <div className="flex items-center gap-1">
-                              <Clock size={13} className="text-muted-foreground" />
-                              {formatLatency(item.response_json?.latency_ms)}
-                            </div>
-                          </div>
-                          <div className="rounded-lg bg-background px-3 py-2">
-                            <div className="text-xs text-muted-foreground mb-1">Token 用量</div>
-                            <div>{formatUsageText(usage)}</div>
-                          </div>
-                        </div>
-
-                        <div className="mt-3 rounded-lg bg-background px-3 py-3">
-                          <div className="text-xs text-muted-foreground mb-1">这次调用返回了什么</div>
-                          <div className={`text-sm leading-6 whitespace-pre-wrap ${item.status === "ok" ? "text-foreground" : "text-destructive"}`}>
-                            {previewText}
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </SheetContent>
-    </Sheet>
-  );
-}
+// Logs UI has been moved to the standalone Generation Logs page under System.

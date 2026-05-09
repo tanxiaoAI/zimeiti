@@ -2,14 +2,11 @@ import React, { useState, useEffect } from "react";
 import {
   UserCheck,
   Scissors,
-  Flame,
-  ListTodo,
   Edit,
   MessageCircle,
   Database,
   LineChart,
   Settings,
-  UploadCloud,
   X,
   ChevronRight,
   Plus,
@@ -18,7 +15,13 @@ import {
   ChevronDown,
   Trash2,
   Send,
-  ChevronLeft
+  ChevronLeft,
+  History,
+  RefreshCw,
+  Clock,
+  DollarSign,
+  Bot,
+  Filter
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { TopicLibraryView } from './TopicLibraryView';
@@ -51,6 +54,7 @@ const NAV_GROUPS = [
   {
     label: "系统",
     items: [
+      { id: "generation_logs", title: "分析费用日志", icon: History },
       { id: "config", title: "配置中心", icon: Settings },
     ]
   }
@@ -317,6 +321,43 @@ const CONTENT_PRODUCTION_STEPS = [
 
 const CONTENT_PRODUCTION_DEFAULT_PROMPT = "你是资深中文内容生产助手，请输出清晰、完整、可直接使用的内容。";
 
+type GenerationLogItem = {
+  id: string;
+  request_id: string;
+  feature: string;
+  status: string;
+  created_at: string;
+  request_json?: {
+    model?: string;
+    topic_name?: string;
+    ref_content_preview?: string;
+    prompt_preview?: string;
+    input_preview?: string;
+    step_label?: string;
+  } | null;
+  response_json?: {
+    latency_ms?: number;
+    estimated_cost_usd?: number | null;
+    usage?: {
+      prompt_tokens?: number;
+      completion_tokens?: number;
+      total_tokens?: number;
+    } | null;
+    result_preview?: string;
+    error?: string;
+  } | null;
+};
+
+type GenerationLogGroup = {
+  requestId: string;
+  feature: string;
+  createdAt: string;
+  topicName: string;
+  description: string;
+  items: GenerationLogItem[];
+  totalEstimatedCost: number;
+};
+
 function getContentProductionStepConfig(accountId: string, stepId: string) {
   const model =
     readScopedConfig(accountId, "content_production", `${stepId}_model`) ||
@@ -333,6 +374,88 @@ function truncateTopicTitle(title: string, maxLength = 12) {
   const text = String(title || "").trim();
   if (!text) return "未命名选题";
   return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+}
+
+function formatDateTime(isoStr: string) {
+  if (!isoStr) return "";
+  const str = isoStr.endsWith('Z') ? isoStr : isoStr.replace(' ', 'T') + 'Z';
+  const d = new Date(str);
+  return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function formatUsdCost(value?: number | null) {
+  if (typeof value !== "number" || Number.isNaN(value)) return "待补充";
+  if (value === 0) return "$0.0000";
+  return `$${value.toFixed(value >= 0.1 ? 2 : 4)}`;
+}
+
+function formatLatency(value?: number | null) {
+  if (typeof value !== "number" || Number.isNaN(value)) return "未记录";
+  if (value < 1000) return `${value} ms`;
+  return `${(value / 1000).toFixed(1)} 秒`;
+}
+
+function formatUsageText(usage?: GenerationLogItem["response_json"] extends infer T ? any : never) {
+  if (!usage) return "Token 未记录";
+  const prompt = Number(usage.prompt_tokens || 0);
+  const completion = Number(usage.completion_tokens || 0);
+  const total = Number(usage.total_tokens || prompt + completion);
+  return `输入 ${prompt} / 输出 ${completion} / 总计 ${total} tokens`;
+}
+
+function getGenerationFeatureMeta(feature: string) {
+  if (feature === "content_production.generate") {
+    return {
+      label: "内容生产",
+      description: "内容生产流程生成",
+      emptyText: "还没有内容生产日志。你在内容生产里点一次“开始生成”后，这里就会开始记录。"
+    };
+  }
+  return {
+    label: "选题库分析",
+    description: "选题库 AI 分析",
+    emptyText: "还没有分析日志。你在选题库点一次 AI 分析后，这里就会开始记录。"
+  };
+}
+
+function groupGenerationLogs(logs: GenerationLogItem[]) {
+  const map = new Map<string, GenerationLogGroup>();
+
+  logs.forEach((item) => {
+    const key = item.request_id || item.id;
+    const existing = map.get(key);
+    const cost = Number(item.response_json?.estimated_cost_usd || 0);
+    const meta = getGenerationFeatureMeta(item.feature);
+    const description = item.feature === "content_production.generate"
+      ? `${meta.description} · ${item.request_json?.step_label || "未记录流程"}`
+      : meta.description;
+    if (!existing) {
+      map.set(key, {
+        requestId: key,
+        feature: item.feature,
+        createdAt: item.created_at,
+        topicName: item.request_json?.topic_name || "未命名选题",
+        description,
+        items: [item],
+        totalEstimatedCost: cost
+      });
+      return;
+    }
+
+    existing.items.push(item);
+    existing.totalEstimatedCost += cost;
+    if (new Date(item.created_at).getTime() > new Date(existing.createdAt).getTime()) {
+      existing.createdAt = item.created_at;
+    }
+  });
+
+  return Array.from(map.values())
+    .map((group) => ({
+      ...group,
+      items: [...group.items].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()),
+      totalEstimatedCost: Number(group.totalEstimatedCost.toFixed(6))
+    }))
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 }
 
 export default function App() {
@@ -465,6 +588,7 @@ export default function App() {
       case "topic_library": return <TopicLibraryView activeAccountId={activeAccountId} onEnterProduction={handleTopicSelect} productionTopicIds={productionTopicIds} />;
       case "generate_cover": return <GenerateCoverView activeAccountId={activeAccountId} />;
       case "content_production": return <EditorView activeAccountId={activeAccountId} topic={activeTopic} onTopicChange={setActiveTopic} productionTopicIds={productionTopicIds} />;
+      case "generation_logs": return <GenerationLogsView activeAccountId={activeAccountId} />;
       case "analytics": return <AnalyticsView />;
       case "config": return <ConfigView activeAccountId={activeAccountId} />;
       default: return <div className="empty-state">建设中...</div>;
@@ -2573,6 +2697,201 @@ function EditorView({ activeAccountId, topic, onTopicChange, productionTopicIds 
           </div>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function GenerationLogsView({ activeAccountId }: { activeAccountId: string }) {
+  const [logs, setLogs] = useState<GenerationLogItem[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [featureFilter, setFeatureFilter] = useState("all");
+
+  const fetchLogs = async () => {
+    if (!activeAccountId) return;
+    try {
+      setLoading(true);
+      setError("");
+      const res = await fetch(`/api/v1/generation-logs?project_id=${encodeURIComponent(activeAccountId)}&limit=200`, {
+        headers: { "X-API-Key": "demo-key" }
+      });
+      const payload = await readApiResponse(res);
+      if (!res.ok || payload.json?.success === false || payload.json?.error) {
+        throw new Error(payload.json?.message || payload.json?.error?.message || "加载日志失败");
+      }
+      setLogs(payload.json?.data?.items || []);
+    } catch (e: any) {
+      console.error(e);
+      setLogs([]);
+      setError(e.message || "加载日志失败");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchLogs();
+  }, [activeAccountId]);
+
+  const filteredLogs = logs.filter((item) => {
+    if (featureFilter === "all") return item.feature === "topic_library.analyze" || item.feature === "content_production.generate";
+    return item.feature === featureFilter;
+  });
+  const groups = groupGenerationLogs(filteredLogs);
+  const totalCalls = groups.reduce((sum, group) => sum + group.items.length, 0);
+  const totalCost = groups.reduce((sum, group) => sum + group.totalEstimatedCost, 0);
+  const successCount = groups.reduce((sum, group) => sum + group.items.filter(item => item.status === "ok").length, 0);
+  const latestTime = groups[0]?.createdAt || "";
+  const emptyText = featureFilter === "content_production.generate"
+    ? getGenerationFeatureMeta("content_production.generate").emptyText
+    : featureFilter === "topic_library.analyze"
+      ? getGenerationFeatureMeta("topic_library.analyze").emptyText
+      : "还没有分析费用日志。你在选题库 AI 分析或内容生产开始生成后，这里就会开始记录。";
+
+  return (
+    <div>
+      <div className="page-header">
+        <div>
+          <h2>分析费用日志</h2>
+          <p>默认展示当前账号下全部日志，包括选题库 AI 分析和内容生产两类模型调用记录。</p>
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <div style={{ position: 'relative' }}>
+            <Filter size={14} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+            <select
+              className="input-field"
+              style={{ minWidth: 200, paddingLeft: 34, background: 'var(--bg-card)', appearance: 'auto' }}
+              value={featureFilter}
+              onChange={(e) => setFeatureFilter(e.target.value)}
+            >
+              <option value="all">全部日志</option>
+              <option value="topic_library.analyze">选题库 AI 分析</option>
+              <option value="content_production.generate">内容生产</option>
+            </select>
+          </div>
+          <button className="btn-ghost" onClick={fetchLogs}>
+            <RefreshCw size={15} /> 刷新
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 mb-6">
+        <div className="rounded-xl border border-border bg-muted/20 p-4">
+          <div className="text-xs text-muted-foreground mb-2">一共触发了几次</div>
+          <div className="text-2xl font-semibold">{groups.length}</div>
+          <div className="text-xs text-muted-foreground mt-1">按每次请求分组</div>
+        </div>
+        <div className="rounded-xl border border-border bg-muted/20 p-4">
+          <div className="text-xs text-muted-foreground mb-2">一共调用了几个模型</div>
+          <div className="text-2xl font-semibold">{totalCalls}</div>
+          <div className="text-xs text-muted-foreground mt-1">每个模型单独记账</div>
+        </div>
+        <div className="rounded-xl border border-border bg-muted/20 p-4">
+          <div className="text-xs text-muted-foreground mb-2">累计预估花费</div>
+          <div className="text-2xl font-semibold">{formatUsdCost(totalCost)}</div>
+          <div className="text-xs text-muted-foreground mt-1">按当前筛选范围汇总</div>
+        </div>
+        <div className="rounded-xl border border-border bg-muted/20 p-4">
+          <div className="text-xs text-muted-foreground mb-2">最近一次调用时间</div>
+          <div className="text-base font-semibold">{latestTime ? formatDateTime(latestTime) : "--"}</div>
+          <div className="text-xs text-muted-foreground mt-1">成功记录 {successCount} 次模型调用</div>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="card" style={{ minHeight: 240, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', gap: 8 }}>
+          <RefreshCw size={18} className="spin" />
+          正在加载分析费用日志...
+        </div>
+      ) : error ? (
+        <div className="card" style={{ borderColor: 'rgba(239,68,68,0.25)', background: 'rgba(239,68,68,0.04)', color: '#dc2626' }}>
+          日志加载失败：{error}
+        </div>
+      ) : groups.length === 0 ? (
+        <div className="card" style={{ textAlign: 'center', color: 'var(--text-muted)' }}>
+          {emptyText}
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {groups.map((group) => {
+            const meta = getGenerationFeatureMeta(group.feature);
+            return (
+              <div key={group.requestId} className="card" style={{ marginBottom: 0 }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, marginBottom: 14 }}>
+                  <div>
+                    <div style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--text-main)' }}>
+                      {formatDateTime(group.createdAt)} 发起了一次【{meta.label}】
+                    </div>
+                    <div style={{ fontSize: '0.84rem', color: 'var(--text-muted)', marginTop: 4 }}>
+                      关联选题：{group.topicName || "未命名选题"}
+                    </div>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: 6 }}>
+                      {group.description}
+                    </div>
+                  </div>
+                  <div style={{ minWidth: 170, borderRadius: 12, background: 'rgba(37,99,235,0.06)', padding: '12px 14px', textAlign: 'right' }}>
+                    <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>这次调用约花费</div>
+                    <div style={{ fontSize: '1.12rem', fontWeight: 700, color: 'var(--primary)' }}>{formatUsdCost(group.totalEstimatedCost)}</div>
+                    <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: 4 }}>共调用 {group.items.length} 个模型</div>
+                  </div>
+                </div>
+
+                <div style={{ display: 'grid', gap: 12 }}>
+                  {group.items.map((item) => {
+                    const usage = item.response_json?.usage;
+                    const previewText = item.status === "ok"
+                      ? (item.response_json?.result_preview || "这次调用已完成，但没有记录结果摘要。")
+                      : (item.response_json?.error || "这次调用失败，未返回更多错误信息。");
+
+                    return (
+                      <div key={item.id} style={{ borderRadius: 14, border: '1px solid var(--border-light)', background: 'rgba(148,163,184,0.06)', padding: 16 }}>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <Bot size={15} color="var(--primary)" />
+                            <span style={{ fontWeight: 700 }}>{item.request_json?.model || "未记录模型"}</span>
+                            <span className="badge" style={item.status === "ok" ? { background: 'rgba(37,99,235,0.08)', color: 'var(--primary)' } : { background: 'rgba(239,68,68,0.08)', color: '#dc2626' }}>
+                              {item.status === "ok" ? "调用成功" : "调用失败"}
+                            </span>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontWeight: 700 }}>
+                            <DollarSign size={14} />
+                            {formatUsdCost(item.response_json?.estimated_cost_usd)}
+                          </div>
+                        </div>
+
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10, marginTop: 12 }}>
+                          <div style={{ borderRadius: 10, background: 'var(--bg-card)', padding: '10px 12px' }}>
+                            <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginBottom: 4 }}>调用时间</div>
+                            <div style={{ fontSize: '0.84rem' }}>{formatDateTime(item.created_at)}</div>
+                          </div>
+                          <div style={{ borderRadius: 10, background: 'var(--bg-card)', padding: '10px 12px' }}>
+                            <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginBottom: 4 }}>耗时</div>
+                            <div style={{ fontSize: '0.84rem', display: 'flex', alignItems: 'center', gap: 4 }}>
+                              <Clock size={13} />
+                              {formatLatency(item.response_json?.latency_ms)}
+                            </div>
+                          </div>
+                          <div style={{ borderRadius: 10, background: 'var(--bg-card)', padding: '10px 12px' }}>
+                            <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginBottom: 4 }}>Token 用量</div>
+                            <div style={{ fontSize: '0.84rem' }}>{formatUsageText(usage)}</div>
+                          </div>
+                        </div>
+
+                        <div style={{ marginTop: 12, borderRadius: 10, background: 'var(--bg-card)', padding: '12px 14px' }}>
+                          <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginBottom: 6 }}>这次调用返回了什么</div>
+                          <div style={{ fontSize: '0.84rem', lineHeight: 1.7, whiteSpace: 'pre-wrap', color: item.status === "ok" ? 'var(--text-main)' : '#dc2626' }}>
+                            {previewText}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
