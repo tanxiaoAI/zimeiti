@@ -299,6 +299,10 @@ function inferMediaExtension(mediaUrl, contentType = "") {
 }
 
 function getPublicBaseUrl(req) {
+  const configuredBaseUrl = String(process.env.PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "");
+  if (configuredBaseUrl) {
+    return configuredBaseUrl;
+  }
   const host = req.get("host");
   const forwardedProto = String(req.get("x-forwarded-proto") || "").split(",")[0].trim();
   const protocol = forwardedProto || (req.protocol === "http" && host.includes("zeabur.app") ? "https" : req.protocol);

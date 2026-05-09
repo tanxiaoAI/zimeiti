@@ -57,6 +57,20 @@ type TopicAnalysisLogGroup = {
   totalEstimatedCost: number;
 };
 
+type TopicAiResultEntry = {
+  model: string;
+  result: string | null;
+  error: string | null;
+  usage?: any;
+  estimated_cost_usd?: number | null;
+  api_mode?: string;
+};
+
+type TopicAnalysisJobState = {
+  analyzing: boolean;
+  results: TopicAiResultEntry[];
+};
+
 function getTopicLibraryConfigKey(accountId: string, field: string) {
   return `topic_library:${accountId}:${field}`;
 }
@@ -131,6 +145,42 @@ function groupTopicAnalysisLogs(logs: TopicAnalysisLogItem[]): TopicAnalysisLogG
       totalEstimatedCost: Number(group.totalEstimatedCost.toFixed(6))
     }))
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+}
+
+function parseStoredTopicAnalysisResult(fallbackModel: string, value: string | null | undefined) {
+  if (!value) return null;
+  const text = String(value);
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === "object" && ("result" in parsed || "error" in parsed)) {
+      return {
+        model: parsed.model || fallbackModel,
+        result: typeof parsed.result === "string" ? parsed.result : "",
+        error: parsed.error ? String(parsed.error) : null,
+        usage: parsed.usage,
+        estimated_cost_usd: typeof parsed.estimated_cost_usd === "number" ? parsed.estimated_cost_usd : null,
+        api_mode: parsed.api_mode ? String(parsed.api_mode) : undefined
+      } as TopicAiResultEntry;
+    }
+  } catch (e) {
+    // keep backward compatibility with plain text storage
+  }
+  if (/^API Error:/i.test(text) || /balance is insufficient/i.test(text) || /^Error:/i.test(text)) {
+    return { model: fallbackModel, result: "", error: text } as TopicAiResultEntry;
+  }
+  return { model: fallbackModel, result: text, error: null } as TopicAiResultEntry;
+}
+
+function stringifyTopicAnalysisResult(entry: TopicAiResultEntry | undefined) {
+  if (!entry) return "";
+  return JSON.stringify({
+    model: entry.model,
+    result: entry.result || "",
+    error: entry.error || null,
+    usage: entry.usage || null,
+    estimated_cost_usd: entry.estimated_cost_usd ?? null,
+    api_mode: entry.api_mode || null
+  });
 }
 
 function EditableInput({ value, onChange, placeholder, style, className }: any) {
@@ -273,6 +323,7 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
   const [optionModal, setOptionModal] = useState<string | null>(null);
   const [copyDrawer, setCopyDrawer] = useState<any | null>(null);
   const [aiDrawer, setAiDrawer] = useState<any | null>(null);
+  const [topicAnalysisJobs, setTopicAnalysisJobs] = useState<Record<string, TopicAnalysisJobState>>({});
   const [analysisLogOpen, setAnalysisLogOpen] = useState(false);
   const [analysisLogs, setAnalysisLogs] = useState<TopicAnalysisLogItem[]>([]);
   const [analysisLogsLoading, setAnalysisLogsLoading] = useState(false);
@@ -432,6 +483,99 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
     writeTopicLibraryConfig(activeAccountId, "models", JSON.stringify(nextModels));
   };
 
+  const buildStoredAnalysisResults = (topic: any, targetModels: string[]) => {
+    return [
+      parseStoredTopicAnalysisResult(targetModels[0], topic?.ai_analysis_1),
+      parseStoredTopicAnalysisResult(targetModels[1], topic?.ai_analysis_2),
+      parseStoredTopicAnalysisResult(targetModels[2], topic?.ai_analysis_3)
+    ].filter(Boolean) as TopicAiResultEntry[];
+  };
+
+  const updateTopicAnalysisJob = (topicId: string, updater: (prev: TopicAnalysisJobState | undefined) => TopicAnalysisJobState) => {
+    setTopicAnalysisJobs(prev => ({
+      ...prev,
+      [topicId]: updater(prev[topicId])
+    }));
+  };
+
+  const startTopicAnalysis = async (topic: any) => {
+    if (!topic?.id) return;
+    const storedResults = buildStoredAnalysisResults(topic, topicModels);
+    const nextRefContent = String(topic.ref_content || "").trim() || "无";
+
+    updateTopicAnalysisJob(topic.id, (prev) => ({
+      analyzing: true,
+      results: prev?.results?.length ? prev.results : storedResults
+    }));
+
+    try {
+      if (!String(topic.ref_content || "").trim()) {
+        if (typeof handleBatchUpdateRecord === "function") {
+          await handleBatchUpdateRecord(topic.id, { ref_content: nextRefContent });
+        } else {
+          await handleUpdateRecord(topic.id, "ref_content", nextRefContent);
+        }
+      }
+
+      let data: any;
+      try {
+        data = await apiPost(`/api/v1/projects/${activeAccountId}/topic-library/analyze`, {
+          systemInstruction: topicPrompt,
+          models: topicModels,
+          topicName: topic.name,
+          refContent: nextRefContent
+        }, "demo-key");
+      } catch (error: any) {
+        const message = String(error?.message || "");
+        if (!/缺少文案内容/.test(message)) {
+          throw error;
+        }
+        data = await apiPost(`/api/v1/projects/${activeAccountId}/topic-library/analyze`, {
+          systemInstruction: topicPrompt,
+          models: topicModels,
+          topicName: topic.name,
+          refContent: "无"
+        }, "demo-key");
+      }
+
+      if (!data?.results) {
+        throw new Error("分析失败");
+      }
+
+      const nextResults = (data.results || []).map((entry: TopicAiResultEntry, index: number) => ({
+        ...entry,
+        model: entry?.model || topicModels[index]
+      }));
+
+      updateTopicAnalysisJob(topic.id, () => ({
+        analyzing: false,
+        results: nextResults
+      }));
+
+      const payload = {
+        ai_analysis_1: stringifyTopicAnalysisResult(nextResults[0]),
+        ai_analysis_2: stringifyTopicAnalysisResult(nextResults[1]),
+        ai_analysis_3: stringifyTopicAnalysisResult(nextResults[2])
+      };
+
+      if (typeof handleBatchUpdateRecord === "function") {
+        await handleBatchUpdateRecord(topic.id, payload);
+      } else {
+        await handleUpdateRecord(topic.id, 'ai_analysis_1', payload.ai_analysis_1);
+        await handleUpdateRecord(topic.id, 'ai_analysis_2', payload.ai_analysis_2);
+        await handleUpdateRecord(topic.id, 'ai_analysis_3', payload.ai_analysis_3);
+      }
+    } catch (e: any) {
+      updateTopicAnalysisJob(topic.id, (prev) => ({
+        analyzing: false,
+        results: prev?.results?.length ? prev.results : storedResults
+      }));
+      alert("分析异常: " + (e?.message || "未知错误"));
+    } finally {
+      notifyAnalysisLogsUpdated();
+    }
+  };
+
   const fetchAnalysisLogs = async () => {
     if (!activeAccountId) return;
     setAnalysisLogsLoading(true);
@@ -573,10 +717,10 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
                   <Button
                     variant="ghost"
                     size="sm"
-                    className={`topic-library-action ${topic.ai_analysis_1 || topic.ai_analysis_2 || topic.ai_analysis_3 ? "topic-library-action-view-analysis" : "topic-library-action-start-analysis"}`}
+                    className={`topic-library-action ${topicAnalysisJobs[topic.id]?.analyzing ? "topic-library-action-start-analysis" : (topic.ai_analysis_1 || topic.ai_analysis_2 || topic.ai_analysis_3 ? "topic-library-action-view-analysis" : "topic-library-action-start-analysis")}`}
                     onClick={() => setAiDrawer(topic)}
                   >
-                    {topic.ai_analysis_1 || topic.ai_analysis_2 || topic.ai_analysis_3 ? "查看分析" : "开始分析"}
+                    {topicAnalysisJobs[topic.id]?.analyzing ? "分析中" : (topic.ai_analysis_1 || topic.ai_analysis_2 || topic.ai_analysis_3 ? "查看分析" : "开始分析")}
                   </Button>
                 </TableCell>
                 <TableCell className="sticky-col-right text-center">
@@ -681,13 +825,11 @@ export function TopicLibraryView({ activeAccountId }: { activeAccountId: string 
       <TopicAiDrawer 
         topic={aiDrawer} 
         onClose={() => setAiDrawer(null)} 
-        onUpdate={handleUpdateRecord}
-        onBatchUpdate={handleBatchUpdateRecord}
-        activeAccountId={activeAccountId}
+        analysisState={aiDrawer?.id ? topicAnalysisJobs[aiDrawer.id] : undefined}
+        onAnalyze={startTopicAnalysis}
         systemInstruction={topicPrompt}
         models={topicModels}
         onModelsChange={persistTopicModels}
-        onAnalyzeLogged={notifyAnalysisLogsUpdated}
       />
 
       <TopicAnalysisLogsDrawer
@@ -788,41 +930,9 @@ function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
   );
 }
 
-function TopicAiDrawer({ topic, onClose, onUpdate, onBatchUpdate, activeAccountId, systemInstruction, models, onModelsChange, onAnalyzeLogged }: any) {
-  const [analyzing, setAnalyzing] = useState(false);
+function TopicAiDrawer({ topic, onClose, analysisState, onAnalyze, systemInstruction, models, onModelsChange }: any) {
   const [promptDialogOpen, setPromptDialogOpen] = useState(false);
-  const [results, setResults] = useState<{ model: string, result: string, error: string | null, usage?: any, estimated_cost_usd?: number | null, api_mode?: string }[]>([]);
   const normalizedRefContent = String(topic?.ref_content || "").trim() || "无";
-
-  const parseStoredResult = (fallbackModel: string, value: string | null | undefined) => {
-    if (!value) return null;
-    const text = String(value);
-    try {
-      const parsed = JSON.parse(text);
-      if (parsed && typeof parsed === "object" && ("result" in parsed || "error" in parsed)) {
-        return {
-          model: parsed.model || fallbackModel,
-          result: String(parsed.result || ""),
-          error: parsed.error ? String(parsed.error) : null
-        };
-      }
-    } catch (e) {
-      // keep backward compatibility with plain text storage
-    }
-    if (/^API Error:/i.test(text) || /balance is insufficient/i.test(text) || /^Error:/i.test(text)) {
-      return { model: fallbackModel, result: "", error: text };
-    }
-    return { model: fallbackModel, result: text, error: null };
-  };
-
-  const stringifyStoredResult = (entry: { model: string, result: string | null, error: string | null } | undefined) => {
-    if (!entry) return "";
-    return JSON.stringify({
-      model: entry.model,
-      result: entry.result || "",
-      error: entry.error || null
-    });
-  };
 
   const buildPromptPreview = () => {
     return [
@@ -839,77 +949,14 @@ function TopicAiDrawer({ topic, onClose, onUpdate, onBatchUpdate, activeAccountI
     ].join("\n");
   };
 
-  useEffect(() => {
-    if (topic?.id) {
-      const res = [
-        parseStoredResult(models[0], topic.ai_analysis_1),
-        parseStoredResult(models[1], topic.ai_analysis_2),
-        parseStoredResult(models[2], topic.ai_analysis_3)
-      ].filter(Boolean) as { model: string, result: string, error: string | null }[];
-      setResults(res);
-    }
-  }, [topic?.id]);
-
   if (!topic) return null;
-
-  const handleAnalyze = async () => {
-    const nextRefContent = normalizedRefContent;
-    setAnalyzing(true);
-    setResults([]);
-    try {
-      if (!String(topic.ref_content || "").trim()) {
-        if (typeof onBatchUpdate === "function") {
-          await onBatchUpdate(topic.id, { ref_content: nextRefContent });
-        } else {
-          await onUpdate(topic.id, "ref_content", nextRefContent);
-        }
-      }
-      let data: any;
-      try {
-        data = await apiPost(`/api/v1/projects/${activeAccountId}/topic-library/analyze`, {
-          systemInstruction,
-          models,
-          topicName: topic.name,
-          refContent: nextRefContent
-        }, "demo-key");
-      } catch (error: any) {
-        const message = String(error?.message || "");
-        if (!/缺少文案内容/.test(message)) {
-          throw error;
-        }
-        data = await apiPost(`/api/v1/projects/${activeAccountId}/topic-library/analyze`, {
-          systemInstruction,
-          models,
-          topicName: topic.name,
-          refContent: "无"
-        }, "demo-key");
-      }
-      
-      if (data?.results) {
-        setResults(data.results);
-        if (typeof onBatchUpdate === "function") {
-          await onBatchUpdate(topic.id, {
-            ai_analysis_1: stringifyStoredResult(data.results[0]),
-            ai_analysis_2: stringifyStoredResult(data.results[1]),
-            ai_analysis_3: stringifyStoredResult(data.results[2])
-          });
-        } else {
-          await onUpdate(topic.id, 'ai_analysis_1', stringifyStoredResult(data.results[0]));
-          await onUpdate(topic.id, 'ai_analysis_2', stringifyStoredResult(data.results[1]));
-          await onUpdate(topic.id, 'ai_analysis_3', stringifyStoredResult(data.results[2]));
-        }
-      } else {
-        alert("分析失败");
-      }
-    } catch (e: any) {
-      alert("分析异常: " + e.message);
-    } finally {
-      if (typeof onAnalyzeLogged === "function") {
-        onAnalyzeLogged();
-      }
-      setAnalyzing(false);
-    }
-  };
+  const analyzing = Boolean(analysisState?.analyzing);
+  const storedResults = [
+    parseStoredTopicAnalysisResult(models[0], topic.ai_analysis_1),
+    parseStoredTopicAnalysisResult(models[1], topic.ai_analysis_2),
+    parseStoredTopicAnalysisResult(models[2], topic.ai_analysis_3)
+  ].filter(Boolean) as TopicAiResultEntry[];
+  const results = analysisState?.results?.length ? analysisState.results : storedResults;
 
   return (
     <Sheet open={!!topic} onOpenChange={(open) => !open && onClose()}>
@@ -958,31 +1005,41 @@ function TopicAiDrawer({ topic, onClose, onUpdate, onBatchUpdate, activeAccountI
               </div>
             </div>
 
-            <Button onClick={handleAnalyze} disabled={analyzing} className="w-full mt-2 topic-primary-btn">
+            <Button onClick={() => onAnalyze(topic)} disabled={analyzing} className="w-full mt-2 topic-primary-btn">
               {analyzing ? <Loader2 size={16} className="spin mr-2" /> : <Sparkles size={16} className="mr-2" />}
-              {analyzing ? "AI 集群正在疯狂分析中..." : "一键下发指令，开始分析"}
+              {analyzing ? "当前选题分析进行中，可切去别的选题继续分析" : "一键下发指令，开始分析"}
             </Button>
           </div>
 
           <div className="flex gap-4 min-h-[400px]">
             {models.map((model, i) => {
               const res = results.find(r => r.model === model);
+              const hasVisibleContent = Boolean(res?.error || res?.result);
               return (
                 <div key={model} className="flex-1 bg-card border border-border rounded-lg flex flex-col overflow-hidden">
                   <div className="bg-muted p-3 border-b border-border font-semibold text-sm flex justify-between items-center">
                     <span>{model}</span>
+                    {analyzing ? <Badge variant="secondary">分析中</Badge> : null}
                     {res?.error ? <Badge variant="destructive">Error</Badge> : null}
-                    {!res?.error && res?.result ? <Badge variant="default" className="bg-primary/10 text-primary hover:bg-primary/20">Success</Badge> : null}
+                    {!analyzing && !res?.error && res?.result ? <Badge variant="default" className="bg-primary/10 text-primary hover:bg-primary/20">Success</Badge> : null}
                   </div>
                   <ScrollArea className="flex-1 p-4">
-                    {analyzing ? (
+                    {!hasVisibleContent && analyzing ? (
                       <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-2 pt-20">
                         <Loader2 size={24} className="spin" />
                         <span className="text-sm">等待 {model} 响应...</span>
                       </div>
                     ) : (
-                      <div className="text-sm whitespace-pre-wrap leading-relaxed">
-                        {res?.error ? <span className="text-destructive">{res.error}</span> : res?.result || <span className="text-muted-foreground italic">暂无分析结果</span>}
+                      <div className="space-y-3">
+                        {analyzing ? (
+                          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                            <Loader2 size={14} className="spin" />
+                            <span>本轮分析进行中，先展示当前已保存结果</span>
+                          </div>
+                        ) : null}
+                        <div className="text-sm whitespace-pre-wrap leading-relaxed">
+                          {res?.error ? <span className="text-destructive">{res.error}</span> : res?.result || <span className="text-muted-foreground italic">暂无分析结果</span>}
+                        </div>
                       </div>
                     )}
                   </ScrollArea>
