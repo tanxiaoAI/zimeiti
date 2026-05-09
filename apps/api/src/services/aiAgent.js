@@ -397,12 +397,19 @@ export async function generateContentProductionStep(systemInstruction, stepData,
     actualModelName,
     modelConfig,
     systemInstruction || "你是资深中文内容生产助手，请输出清晰、完整、可直接使用的内容。",
-    promptText
+    promptText,
+    null,
+    {
+      // Content production often requests full drafts; keep output bounded to reduce 504s on Claude.
+      maxTokens: Number(process.env.CONTENT_PRODUCTION_MAX_TOKENS || 4096),
+      timeoutMs: Number(process.env.CONTENT_PRODUCTION_TIMEOUT_MS || 150000)
+    }
   );
 }
 
-async function callLlmWithPrompt(API_URL, actualModelName, apiConfig, systemInstruction, promptText, cover_image = null) {
+async function callLlmWithPrompt(API_URL, actualModelName, apiConfig, systemInstruction, promptText, cover_image = null, requestOptions = {}) {
   const { useGptsChatApi, useGptsMessagesApi, apiMode, modelName } = apiConfig;
+  const maxTokens = Number(requestOptions.maxTokens || 8192);
   let payload, headers;
 
   if (useGptsChatApi) {
@@ -420,7 +427,7 @@ async function callLlmWithPrompt(API_URL, actualModelName, apiConfig, systemInst
         { role: 'system', content: systemInstruction },
         { role: 'user', content: userContent }
       ],
-      max_tokens: 8192
+      max_tokens: maxTokens
     };
     headers = {
       "Content-Type": "application/json",
@@ -437,7 +444,7 @@ async function callLlmWithPrompt(API_URL, actualModelName, apiConfig, systemInst
       messages: [
         { role: 'user', content: `${systemInstruction}\n\n${userContent}` }
       ],
-      max_tokens: 8192
+      max_tokens: maxTokens
     };
     headers = {
       "Content-Type": "application/json",
@@ -467,8 +474,9 @@ async function callLlmWithPrompt(API_URL, actualModelName, apiConfig, systemInst
     };
   }
 
-  const timeoutMs = Number(process.env.LLM_REQUEST_TIMEOUT_MS || 90000);
-  const shouldRetry = (status) => status === 502 || status === 503 || status === 504;
+  const timeoutMs = Number(requestOptions.timeoutMs || process.env.LLM_REQUEST_TIMEOUT_MS || 90000);
+  const RETRYABLE_STATUS_CODES = new Set([502, 503, 504, 520, 522, 524, 570]);
+  const shouldRetry = (status) => RETRYABLE_STATUS_CODES.has(status);
 
   const requestOnce = async () => {
     const controller = new AbortController();
@@ -499,6 +507,9 @@ async function callLlmWithPrompt(API_URL, actualModelName, apiConfig, systemInst
     const errorText = await response.text();
     if (response.status === 504) {
       throw new Error("API Error: 504 网关超时，请稍后重试或切换模型");
+    }
+    if (response.status === 570 || response.status === 520 || response.status === 522 || response.status === 524) {
+      throw new Error("API Error: 上游 Claude 服务暂时不可用，请稍后重试或切换模型");
     }
     const compactError = String(errorText || "")
       .replace(/\s+/g, " ")
