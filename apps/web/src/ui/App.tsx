@@ -679,6 +679,9 @@ function ConfigView({ activeAccountId }: { activeAccountId: string }) {
   const [selectedModel, setSelectedModel] = useState("gpt-5.5");
   const [fileStatus, setFileStatus] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [systemConfigStatus, setSystemConfigStatus] = useState<any>(null);
+  const [systemConfigLoading, setSystemConfigLoading] = useState(false);
+  const [systemConfigError, setSystemConfigError] = useState("");
 
   const configOptions = [
     { id: "free_chat", title: "自由对话" },
@@ -696,6 +699,30 @@ function ConfigView({ activeAccountId }: { activeAccountId: string }) {
       removeScopedConfig(activeAccountId, option.id, "constraint");
     }
   }, [activeAccountId]);
+
+  const fetchSystemConfigStatus = async () => {
+    try {
+      setSystemConfigLoading(true);
+      setSystemConfigError("");
+      const res = await fetch("/api/v1/system/config-status", {
+        headers: { "X-API-Key": "demo-key" }
+      });
+      const payload = await readApiResponse(res);
+      if (!res.ok || payload.json?.success === false || payload.json?.error) {
+        throw new Error(payload.json?.message || payload.json?.error?.message || "系统配置检查失败");
+      }
+      setSystemConfigStatus(payload.json?.data || null);
+    } catch (e: any) {
+      console.error(e);
+      setSystemConfigError(e.message || "系统配置检查失败");
+    } finally {
+      setSystemConfigLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchSystemConfigStatus();
+  }, []);
 
   const fetchContextFileInfo = async (tab: string) => {
     if (!activeAccountId) {
@@ -823,11 +850,106 @@ function ConfigView({ activeAccountId }: { activeAccountId: string }) {
     }
   };
 
+  const envItems = systemConfigStatus?.env_items || [];
+  const storage = systemConfigStatus?.storage || null;
+  const runtime = systemConfigStatus?.runtime || null;
+  const missingRequiredItems = envItems.filter((item: any) => item.required && !item.configured);
+
   return (
     <div>
       <div className="page-header">
         <h2>系统配置中心</h2>
-        <p>为每个功能模块单独配置系统提示词、模型与专属全文参考文件。</p>
+        <p>这里分两层：模块提示词/文件配置保存在系统里；生产环境密钥请统一配置在 Zeabur 环境变量。</p>
+      </div>
+
+      <div className="card" style={{ marginBottom: 24 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: '1.05rem' }}>运行环境检查</h3>
+            <p style={{ margin: '6px 0 0', fontSize: '0.84rem', color: 'var(--text-muted)' }}>
+              这里展示服务端实际读取到的依赖项状态。密钥不显示明文，只显示是否已配置。
+            </p>
+          </div>
+          <button className="btn-ghost" onClick={fetchSystemConfigStatus} disabled={systemConfigLoading}>
+            {systemConfigLoading ? '检查中...' : '刷新检查'}
+          </button>
+        </div>
+
+        {systemConfigError ? (
+          <div style={{ padding: '12px 14px', borderRadius: 10, background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.16)', color: '#dc2626', fontSize: '0.86rem' }}>
+            配置检查失败：{systemConfigError}
+          </div>
+        ) : (
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12, marginBottom: 16 }}>
+              <div style={{ padding: '14px 16px', borderRadius: 12, background: 'var(--bg-app)', border: '1px solid var(--border-light)' }}>
+                <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: 6 }}>必填缺失项</div>
+                <div style={{ fontSize: '1.4rem', fontWeight: 800, color: missingRequiredItems.length ? '#dc2626' : 'var(--success)' }}>
+                  {missingRequiredItems.length}
+                </div>
+              </div>
+              <div style={{ padding: '14px 16px', borderRadius: 12, background: 'var(--bg-app)', border: '1px solid var(--border-light)' }}>
+                <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: 6 }}>数据目录</div>
+                <div style={{ fontSize: '0.88rem', fontWeight: 700, wordBreak: 'break-all' }}>{storage?.data_dir || '--'}</div>
+              </div>
+              <div style={{ padding: '14px 16px', borderRadius: 12, background: 'var(--bg-app)', border: '1px solid var(--border-light)' }}>
+                <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: 6 }}>当前运行模式</div>
+                <div style={{ fontSize: '0.88rem', fontWeight: 700 }}>
+                  LLM={runtime?.cap_llm || '--'} / NODE_ENV={runtime?.node_env || '--'}
+                </div>
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 16, padding: '12px 14px', borderRadius: 10, background: 'rgba(37,99,235,0.06)', border: '1px solid rgba(37,99,235,0.12)', fontSize: '0.84rem', lineHeight: 1.7 }}>
+              <strong>推荐做法：</strong> 线上密钥统一配在 <code>Zeabur Environment Variables</code>；当前页面只负责告诉你缺了什么。像提示词、模块默认模型、挂载文件，这些才适合保存在系统数据目录和持久硬盘里。
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {envItems.map((item: any) => (
+                <div key={item.key} style={{ padding: '14px 16px', borderRadius: 12, background: 'var(--bg-app)', border: '1px solid var(--border-light)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 8, flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <code style={{ fontSize: '0.82rem' }}>{item.key}</code>
+                      <span style={{ fontSize: '0.84rem', fontWeight: 700 }}>{item.label}</span>
+                      <span className="badge" style={{ background: item.configured ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.12)', color: item.configured ? '#15803d' : '#dc2626', border: 'none' }}>
+                        {item.configured ? '已配置' : '未配置'}
+                      </span>
+                      {item.required ? (
+                        <span className="badge" style={{ background: 'rgba(245,158,11,0.14)', color: '#b45309', border: 'none' }}>
+                          必填
+                        </span>
+                      ) : null}
+                    </div>
+                    <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                      建议位置：{item.configure_in === 'zeabur' ? 'Zeabur 环境变量' : '系统数据目录'}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', lineHeight: 1.7 }}>
+                    用途：{(item.used_by || []).join('、') || '未标注'}
+                  </div>
+                  <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', lineHeight: 1.7 }}>
+                    当前值：{item.value_preview || item.default_value || '未设置'}
+                  </div>
+                  <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', lineHeight: 1.7 }}>
+                    说明：{item.note || '无'}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {storage ? (
+              <div style={{ marginTop: 16, padding: '14px 16px', borderRadius: 12, background: 'var(--bg-app)', border: '1px solid var(--border-light)' }}>
+                <div style={{ fontSize: '0.9rem', fontWeight: 700, marginBottom: 8 }}>当前硬盘/目录落点</div>
+                <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', lineHeight: 1.8, wordBreak: 'break-all' }}>
+                  DATA_DIR：{storage.data_dir}<br />
+                  DB_PATH：{storage.db_path}<br />
+                  UPLOADS_DIR：{storage.uploads_dir}<br />
+                  KB_STORAGE_DIR：{storage.kb_storage_dir}
+                </div>
+              </div>
+            ) : null}
+          </>
+        )}
       </div>
 
       <div style={{ display: 'flex', gap: 24, alignItems: 'flex-start' }}>

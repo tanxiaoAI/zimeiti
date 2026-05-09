@@ -14,7 +14,7 @@ import { validateBody } from "./middlewares/validate.js";
 import { ok, fail } from "@ai-media/shared/contracts";
 import { ErrorCodes } from "@ai-media/shared/errors";
 import multer from "multer";
-import { uploadsDir } from "./dataPaths.js";
+import { dataDir, dbPath, kbStorageDir, uploadsDir } from "./dataPaths.js";
 
 import {
   LoginSchema,
@@ -90,6 +90,171 @@ function buildPreviewText(value, maxLength = 240) {
   return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
 }
 
+function getEnvValue(name) {
+  return String(process.env[name] || "").trim();
+}
+
+function isEnvConfigured(name) {
+  return Boolean(getEnvValue(name));
+}
+
+function buildSystemEnvChecklist() {
+  return [
+    {
+      key: "GPTS_API_KEY",
+      label: "GPTS 聚合模型 Key",
+      required: true,
+      secret: true,
+      configure_in: "zeabur",
+      used_by: ["自由对话", "账号定位", "选题库 AI 分析", "视频拆解 AI", "生成封面"],
+      note: "当前大部分 GPT/Claude/GPTS Gemini 模型都依赖它。"
+    },
+    {
+      key: "GEMINI_API_KEY",
+      label: "Gemini 原生 API Key",
+      required: false,
+      secret: true,
+      configure_in: "zeabur",
+      used_by: ["Gemini 原生模型调用"],
+      note: "仅当选择原生 Gemini 路由时需要。"
+    },
+    {
+      key: "GETONE_API_KEY",
+      label: "GetOne 解析 Key",
+      required: true,
+      secret: true,
+      configure_in: "zeabur",
+      used_by: ["抖音/小红书链接解析"],
+      note: "视频文案提取第一步依赖它。"
+    },
+    {
+      key: "GETONE_API_BASE_URL",
+      label: "GetOne Base URL",
+      required: false,
+      secret: false,
+      configure_in: "zeabur",
+      used_by: ["抖音/小红书链接解析"],
+      default_value: "https://api.getoneapi.com",
+      note: "通常无需改动。"
+    },
+    {
+      key: "VOLC_APP_ID",
+      label: "火山 ASR App ID",
+      required: !isEnvConfigured("VOLC_ASR_API_KEY"),
+      secret: true,
+      configure_in: "zeabur",
+      used_by: ["火山语音识别 submit/query"],
+      note: "推荐与 VOLC_ACCESS_TOKEN 成对配置。"
+    },
+    {
+      key: "VOLC_ACCESS_TOKEN",
+      label: "火山 ASR Access Token",
+      required: !isEnvConfigured("VOLC_ASR_API_KEY"),
+      secret: true,
+      configure_in: "zeabur",
+      used_by: ["火山语音识别 submit/query"],
+      note: "推荐与 VOLC_APP_ID 成对配置。"
+    },
+    {
+      key: "VOLC_ASR_API_KEY",
+      label: "火山 ASR 旧版 API Key",
+      required: !isEnvConfigured("VOLC_APP_ID") || !isEnvConfigured("VOLC_ACCESS_TOKEN"),
+      secret: true,
+      configure_in: "zeabur",
+      used_by: ["火山语音识别 submit/query"],
+      note: "回退鉴权方式，有 AppID + AccessToken 时可不配。"
+    },
+    {
+      key: "VOLC_ASR_RESOURCE_ID",
+      label: "火山 ASR Resource ID",
+      required: false,
+      secret: false,
+      configure_in: "zeabur",
+      used_by: ["火山语音识别 submit/query"],
+      default_value: "volc.seedasr.auc",
+      note: "通常保持默认即可。"
+    },
+    {
+      key: "PUBLIC_BASE_URL",
+      label: "站点公网 Base URL",
+      required: false,
+      secret: false,
+      configure_in: "zeabur",
+      used_by: ["生成封面", "公网静态资源地址"],
+      note: "未配置时按请求头推断。"
+    },
+    {
+      key: "MEDIA_PUBLIC_BASE_URL",
+      label: "媒体公网 Base URL",
+      required: false,
+      secret: false,
+      configure_in: "zeabur",
+      used_by: ["视频/音频镜像地址", "火山 ASR 拉取镜像媒体"],
+      note: "推荐配置成可直接公网访问静态文件的域名。"
+    },
+    {
+      key: "DATA_DIR",
+      label: "业务数据目录",
+      required: false,
+      secret: false,
+      configure_in: "zeabur",
+      used_by: ["SQLite", "uploads", "知识库文件"],
+      note: "线上建议指向 Zeabur 持久盘挂载目录。"
+    },
+    {
+      key: "DB_PATH",
+      label: "SQLite 数据库路径",
+      required: false,
+      secret: false,
+      configure_in: "zeabur",
+      used_by: ["SQLite"],
+      note: "通常跟随 DATA_DIR 自动推导。"
+    },
+    {
+      key: "UPLOADS_DIR",
+      label: "上传文件目录",
+      required: false,
+      secret: false,
+      configure_in: "zeabur",
+      used_by: ["视频镜像", "封面临时文件"],
+      note: "通常跟随 DATA_DIR 自动推导。"
+    }
+  ].map((item) => {
+    const actualValue = getEnvValue(item.key);
+    return {
+      ...item,
+      configured: Boolean(actualValue),
+      value_preview: actualValue
+        ? (item.secret ? `${actualValue.slice(0, 3)}***${actualValue.slice(-2)}` : actualValue)
+        : "",
+      source: actualValue ? "process.env" : (item.default_value ? "default" : "missing")
+    };
+  });
+}
+
+function buildSystemConfigStatus() {
+  return {
+    env_items: buildSystemEnvChecklist(),
+    storage: {
+      data_dir: dataDir,
+      db_path: dbPath,
+      uploads_dir: uploadsDir,
+      kb_storage_dir: kbStorageDir,
+      data_dir_exists: fs.existsSync(dataDir),
+      uploads_dir_exists: fs.existsSync(uploadsDir),
+      kb_storage_dir_exists: fs.existsSync(kbStorageDir)
+    },
+    runtime: {
+      node_env: process.env.NODE_ENV || "development",
+      port: Number(process.env.PORT || 8787),
+      cap_llm: (process.env.CAP_LLM || "mock").toLowerCase(),
+      cap_rag: (process.env.CAP_RAG || "mock").toLowerCase(),
+      cap_cover: (process.env.CAP_COVER || "mock").toLowerCase(),
+      cap_hot: (process.env.CAP_HOT || "mock").toLowerCase()
+    }
+  };
+}
+
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 app.use(requestContext);
@@ -107,6 +272,11 @@ app.use(express.static(webDistPath));
 
 app.get("/health", (req, res) => {
   res.json({ ok: true, request_id: req.context?.requestId });
+});
+
+app.get("/api/v1/system/config-status", authApiKey, (req, res) => {
+  const request_id = req.context?.requestId;
+  res.json(ok(buildSystemConfigStatus(), request_id));
 });
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500 * 1024 * 1024 } });
