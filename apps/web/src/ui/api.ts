@@ -2,7 +2,10 @@ export type ApiOk<T> = { request_id: string; data: T; error: null };
 export type ApiFail = { request_id: string; data: null; error: { code: string; message: string; details?: any } };
 export type ApiResp<T> = ApiOk<T> | ApiFail;
 
-export const API_BASE = (import.meta as any).env?.VITE_API_BASE || "http://localhost:8787";
+const envApiBase = String((import.meta as any).env?.VITE_API_BASE || "").trim();
+
+// In production we should default to same-origin /api requests instead of a local dev server.
+export const API_BASE = envApiBase || "";
 
 function isFail<T>(x: ApiResp<T>): x is ApiFail {
   return (x as any).error != null;
@@ -64,4 +67,3 @@ export async function apiUpload<T>(path: string, form: FormData, apiKey?: string
   if (isFail(json)) throw new Error(`${json.error.code}: ${json.error.message}`);
   return json.data;
 }
-
