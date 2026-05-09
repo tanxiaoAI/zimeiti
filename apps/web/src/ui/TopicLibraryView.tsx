@@ -177,7 +177,7 @@ function buildExtractDebugText(debug: any) {
     ? `1. GetOne解析成功${debug?.parser?.parser ? `：${debug.parser.parser}` : ""}`
     : `1. GetOne解析失败：${debug?.parser?.error || "未知错误"}`;
   const mirrorLine = debug?.mirror?.ok
-    ? `2. 视频已下载到服务器：${debug?.mirror?.mirroredMediaUrl || "已生成镜像地址"}`
+    ? `2. 视频已下载到服务器(${debug?.mirror?.method || "unknown"})：${debug?.mirror?.mirroredMediaUrl || "已生成镜像地址"}`
     : `2. 视频未下载到服务器：${debug?.mirror?.error || "未知错误"}`;
   const asrLine = debug?.asr?.ok
     ? "3. 火山ASR解析成功"

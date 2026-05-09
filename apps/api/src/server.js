@@ -4,6 +4,7 @@ import cors from "cors";
 import path from "node:path";
 import fs from "node:fs";
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
@@ -117,6 +118,9 @@ const VOLC_APP_ID = process.env.VOLC_APP_ID;
 const VOLC_ACCESS_TOKEN = process.env.VOLC_ACCESS_TOKEN;
 const VOLC_ASR_RESOURCE_ID = process.env.VOLC_ASR_RESOURCE_ID || "volc.seedasr.auc";
 const MEDIA_PUBLIC_BASE_URL = process.env.MEDIA_PUBLIC_BASE_URL;
+const YT_DLP_PYTHON = process.env.YT_DLP_PYTHON || "python3";
+let ytDlpReadyPromise = null;
+let ffmpegReadyPromise = null;
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = 20000, timeoutLabel = "请求超时") {
   const controller = new AbortController();
@@ -131,6 +135,80 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 20000, timeoutLab
   } finally {
     clearTimeout(timer);
   }
+}
+
+function runProcess(command, args, { cwd, timeoutMs = 30000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: process.env
+    });
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (timedOut) {
+        reject(new Error(`命令执行超时(${timeoutMs}ms): ${command} ${args.join(" ")}`));
+        return;
+      }
+      if (code !== 0) {
+        reject(new Error((stderr || stdout || `退出码 ${code}`).trim()));
+        return;
+      }
+      resolve({ stdout, stderr });
+    });
+  });
+}
+
+async function ensureYtDlpAvailable() {
+  if (!ytDlpReadyPromise) {
+    ytDlpReadyPromise = (async () => {
+      try {
+        await runProcess(YT_DLP_PYTHON, ["-m", "yt_dlp", "--version"], { timeoutMs: 10000 });
+        return;
+      } catch (_error) {
+        await runProcess(
+          YT_DLP_PYTHON,
+          ["-m", "pip", "install", "--user", "--disable-pip-version-check", "yt-dlp"],
+          { timeoutMs: Number(process.env.YT_DLP_INSTALL_TIMEOUT_MS || 120000) }
+        );
+        await runProcess(YT_DLP_PYTHON, ["-m", "yt_dlp", "--version"], { timeoutMs: 10000 });
+      }
+    })().catch((error) => {
+      ytDlpReadyPromise = null;
+      throw new Error(`yt-dlp 不可用: ${error.message}`);
+    });
+  }
+  return ytDlpReadyPromise;
+}
+
+async function ensureFfmpegAvailable() {
+  if (!ffmpegReadyPromise) {
+    ffmpegReadyPromise = runProcess("ffmpeg", ["-version"], {
+      timeoutMs: 10000
+    }).catch((error) => {
+      ffmpegReadyPromise = null;
+      throw new Error(`ffmpeg 不可用: ${error.message}`);
+    });
+  }
+  return ffmpegReadyPromise;
 }
 
 function extractXiaohongshuNoteId(link) {
@@ -227,6 +305,44 @@ function rankCandidateVideoUrl(candidate) {
   return score;
 }
 
+function dedupeUrls(urls) {
+  const seen = new Set();
+  const result = [];
+  for (const item of urls || []) {
+    const value = String(item || "").trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    result.push(value);
+  }
+  return result;
+}
+
+function buildDouyinVideoCandidates(aweme) {
+  const candidates = [];
+  const pushCandidates = (urls, source) => {
+    for (const url of urls || []) {
+      if (!url) continue;
+      candidates.push({ url, source });
+    }
+  };
+
+  pushCandidates(aweme?.video?.play_addr_h264?.url_list, "aweme.video.play_addr_h264.url_list");
+  pushCandidates(aweme?.video?.play_addr?.url_list, "aweme.video.play_addr.url_list");
+  pushCandidates(aweme?.video?.play_addr_265?.url_list, "aweme.video.play_addr_265.url_list");
+  for (const bitRate of aweme?.video?.bit_rate || []) {
+    pushCandidates(bitRate?.play_addr?.url_list, "aweme.video.bit_rate.play_addr.url_list");
+  }
+  pushCandidates(aweme?.video?.download_addr?.url_list, "aweme.video.download_addr.url_list");
+  pushCandidates(aweme?.video?.download_suffix_logo_addr?.url_list, "aweme.video.download_suffix_logo_addr.url_list");
+
+  const seen = new Set();
+  return candidates.filter((item) => {
+    if (!item?.url || seen.has(item.url)) return false;
+    seen.add(item.url);
+    return true;
+  });
+}
+
 function pickDouyinVideoUrl(getOneData) {
   const aweme =
     getOneData?.aweme_detail ||
@@ -235,19 +351,14 @@ function pickDouyinVideoUrl(getOneData) {
     getOneData?.data?.aweme_details?.[0] ||
     getOneData;
 
-  const preferredUrls = [
-    ...(aweme?.video?.download_addr?.url_list || []),
-    ...(aweme?.video?.play_addr?.url_list || []),
-    ...(aweme?.video?.play_addr_h264?.url_list || []),
-    ...((aweme?.video?.bit_rate || []).flatMap(item => item?.play_addr?.url_list || []))
-  ].filter(Boolean);
-
-  if (preferredUrls.length > 0) {
+  const preferredCandidates = buildDouyinVideoCandidates(aweme);
+  if (preferredCandidates.length > 0) {
     return {
-      videoUrl: preferredUrls[0],
+      videoUrl: preferredCandidates[0].url,
+      candidateVideoUrls: preferredCandidates.map((item) => item.url),
       noteTitle: aweme?.desc || aweme?.title || "",
       noteDesc: aweme?.desc || "",
-      videoSource: "aweme.video.preferred_url_list"
+      videoSource: preferredCandidates[0].source
     };
   }
 
@@ -261,6 +372,7 @@ function pickDouyinVideoUrl(getOneData) {
 
   return {
     videoUrl: candidates[0].url,
+    candidateVideoUrls: dedupeUrls(candidates.map((item) => item.url)),
     noteTitle: aweme?.desc || aweme?.title || "",
     noteDesc: aweme?.desc || "",
     videoSource: candidates[0].path
@@ -420,6 +532,118 @@ async function mirrorRemoteMediaToPublicUrl(remoteUrl, req, prefix = "topic_medi
     localPath,
     filename,
     contentType: response.headers.get("content-type") || ""
+  };
+}
+
+async function mirrorRemoteMediaCandidatesToPublicUrl(remoteUrls, req, prefix = "topic_media") {
+  const attempts = [];
+  for (const remoteUrl of dedupeUrls(remoteUrls)) {
+    try {
+      const result = await mirrorRemoteMediaToPublicUrl(remoteUrl, req, prefix);
+      attempts.push({
+        ok: true,
+        method: "fetch",
+        sourceUrl: remoteUrl,
+        mirroredMediaUrl: result.publicUrl,
+        localPath: result.localPath,
+        filename: result.filename,
+        contentType: result.contentType || ""
+      });
+      return {
+        ...result,
+        remoteUrl,
+        attempts
+      };
+    } catch (error) {
+      attempts.push({
+        ok: false,
+        method: "fetch",
+        sourceUrl: remoteUrl,
+        error: error.message
+      });
+    }
+  }
+
+  const error = new Error(attempts[attempts.length - 1]?.error || "媒体文件下载失败");
+  error.attempts = attempts;
+  throw error;
+}
+
+async function extractAudioTrackToPublicUrl(localPath, req, prefix = "topic_audio") {
+  await ensureFfmpegAvailable();
+  if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+
+  const filename = `${prefix}_${Date.now()}_${randomUUID()}.mp3`;
+  const audioPath = path.join(uploadsDir, filename);
+  await runProcess("ffmpeg", [
+    "-y",
+    "-loglevel",
+    "error",
+    "-i",
+    localPath,
+    "-vn",
+    "-ac",
+    "1",
+    "-ar",
+    "16000",
+    "-c:a",
+    "libmp3lame",
+    "-b:a",
+    "64k",
+    audioPath
+  ], {
+    timeoutMs: Number(process.env.FFMPEG_TIMEOUT_MS || 120000)
+  });
+
+  if (!fs.existsSync(audioPath)) {
+    throw new Error("ffmpeg 已执行，但未生成音频文件");
+  }
+
+  return {
+    publicUrl: `${getMediaPublicBaseUrl(req)}/static/uploads/${filename}`,
+    localPath: audioPath,
+    filename,
+    method: "ffmpeg-mp3"
+  };
+}
+
+async function downloadMediaByYtDlp(sourceUrl, req, prefix = "topic_media") {
+  await ensureYtDlpAvailable();
+  if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+
+  const outTemplate = path.join(uploadsDir, `${prefix}_${Date.now()}_${randomUUID()}.%(ext)s`);
+  const args = [
+    "-m",
+    "yt_dlp",
+    "--no-playlist",
+    "--no-progress",
+    "--no-warnings",
+    "--print",
+    "after_move:filepath",
+    "-o",
+    outTemplate,
+    "-f",
+    "mp4/b",
+    sourceUrl
+  ];
+  const { stdout } = await runProcess(YT_DLP_PYTHON, args, {
+    timeoutMs: Number(process.env.YT_DLP_TIMEOUT_MS || 180000)
+  });
+  const lines = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const localPath = lines[lines.length - 1];
+  if (!localPath || !fs.existsSync(localPath)) {
+    throw new Error("yt-dlp 已执行，但未找到下载后的媒体文件");
+  }
+
+  return {
+    publicUrl: `${getMediaPublicBaseUrl(req)}/static/uploads/${path.basename(localPath)}`,
+    localPath,
+    filename: path.basename(localPath),
+    contentType: "",
+    method: "yt-dlp"
   };
 }
 
@@ -1308,41 +1532,120 @@ app.post("/api/v1/projects/:projectId/topic-library/extract", authApiKey, async 
       asr: { ok: false, stage: "volc_asr", error: "未开始" }
     };
     const parsed = await resolveVideoUrlByPlatform(link, platform);
+    const resolvedMediaUrls = dedupeUrls([...(parsed.candidateVideoUrls || []), parsed.videoUrl]);
     extractDebug.parser = {
       ...(parsed.parserDebug || {}),
       ok: true,
       parser: parsed.parser,
       videoSource: parsed.videoSource || null,
-      resolvedVideoUrl: parsed.videoUrl
+      resolvedVideoUrl: parsed.videoUrl,
+      candidateVideoUrls: resolvedMediaUrls
     };
 
     let mirroredMediaUrl = null;
-    try {
-      const mirrorResult = await mirrorRemoteMediaToPublicUrl(parsed.videoUrl, req, "topic_extract");
-      mirroredMediaUrl = mirrorResult.publicUrl;
-      extractDebug.mirror = {
-        ok: true,
-        stage: "mirror",
-        remoteUrl: parsed.videoUrl,
-        mirroredMediaUrl,
-        localPath: mirrorResult.localPath,
-        filename: mirrorResult.filename,
-        contentType: mirrorResult.contentType
-      };
-    } catch (mirrorError) {
-      console.warn("topic-library extract mirror failed:", mirrorError.message);
-      extractDebug.mirror = {
-        ok: false,
-        stage: "mirror",
-        remoteUrl: parsed.videoUrl,
-        error: mirrorError.message
-      };
+    let mirroredAudioUrl = null;
+    let mirroredLocalPath = null;
+    const mirrorAttempts = [];
+    if (platform === "抖音") {
+      try {
+        const ytDlpResult = await downloadMediaByYtDlp(link, req, "topic_extract");
+        mirroredMediaUrl = ytDlpResult.publicUrl;
+        mirroredLocalPath = ytDlpResult.localPath;
+        mirrorAttempts.push({
+          ok: true,
+          method: ytDlpResult.method,
+          sourceUrl: link,
+          mirroredMediaUrl,
+          localPath: ytDlpResult.localPath,
+          filename: ytDlpResult.filename
+        });
+      } catch (ytDlpError) {
+        console.warn("topic-library extract yt-dlp failed:", ytDlpError.message);
+        mirrorAttempts.push({
+          ok: false,
+          method: "yt-dlp",
+          sourceUrl: link,
+          error: /Fresh cookies/i.test(ytDlpError.message)
+            ? "yt-dlp 需要 fresh cookies，当前服务端未提供可用 cookies"
+            : ytDlpError.message
+        });
+      }
     }
+    if (!mirroredMediaUrl) {
+      try {
+        const mirrorResult = await mirrorRemoteMediaCandidatesToPublicUrl(resolvedMediaUrls, req, "topic_extract");
+        mirroredMediaUrl = mirrorResult.publicUrl;
+        mirroredLocalPath = mirrorResult.localPath;
+        mirrorAttempts.push(...(mirrorResult.attempts || []));
+      } catch (mirrorError) {
+        console.warn("topic-library extract mirror failed:", mirrorError.message);
+        if (Array.isArray(mirrorError.attempts) && mirrorError.attempts.length > 0) {
+          mirrorAttempts.push(...mirrorError.attempts);
+        } else {
+          mirrorAttempts.push({
+            ok: false,
+            method: "fetch",
+            sourceUrl: parsed.videoUrl,
+            error: mirrorError.message
+          });
+        }
+      }
+    }
+    let audioExtract = null;
+    if (mirroredLocalPath) {
+      try {
+        const audioResult = await extractAudioTrackToPublicUrl(mirroredLocalPath, req, "topic_extract_audio");
+        mirroredAudioUrl = audioResult.publicUrl;
+        audioExtract = {
+          ok: true,
+          method: audioResult.method,
+          mirroredAudioUrl,
+          localPath: audioResult.localPath,
+          filename: audioResult.filename
+        };
+      } catch (audioError) {
+        console.warn("topic-library extract audio convert failed:", audioError.message);
+        audioExtract = {
+          ok: false,
+          method: "ffmpeg-mp3",
+          error: audioError.message
+        };
+      }
+    }
+    const successfulMirrorAttempt = mirrorAttempts.find((item) => item.ok) || null;
+    extractDebug.mirror = successfulMirrorAttempt
+      ? {
+          ok: true,
+          stage: "mirror",
+          method: successfulMirrorAttempt.method,
+          remoteUrl: successfulMirrorAttempt.sourceUrl,
+          mirroredMediaUrl: successfulMirrorAttempt.mirroredMediaUrl,
+          localPath: successfulMirrorAttempt.localPath,
+          filename: successfulMirrorAttempt.filename,
+          contentType: successfulMirrorAttempt.contentType || "",
+          mirroredAudioUrl,
+          audioExtract,
+          attempts: mirrorAttempts
+        }
+      : {
+          ok: false,
+          stage: "mirror",
+          remoteUrl: parsed.videoUrl,
+          error: mirrorAttempts[mirrorAttempts.length - 1]?.error || "媒体文件下载失败",
+          mirroredAudioUrl,
+          audioExtract,
+          attempts: mirrorAttempts
+        };
+
     let transcript = "";
     let fallbackContent = "";
     let extractFallback = null;
     try {
-      const transcribeResult = await transcribeMediaWithFallback([mirroredMediaUrl, parsed.videoUrl]);
+      const transcribeResult = await transcribeMediaWithFallback([
+        mirroredAudioUrl,
+        mirroredMediaUrl,
+        ...resolvedMediaUrls
+      ]);
       transcript = transcribeResult.text;
       extractDebug.asr = transcribeResult.debug;
     } catch (transcribeError) {
@@ -1369,7 +1672,9 @@ app.post("/api/v1/projects/:projectId/topic-library/extract", authApiKey, async 
       platform,
       source_link: link,
       resolved_video_url: parsed.videoUrl,
+      resolved_video_candidates: resolvedMediaUrls,
       mirrored_media_url: mirroredMediaUrl,
+      mirrored_audio_url: mirroredAudioUrl,
       extract_fallback: extractFallback,
       extract_debug: extractDebug,
       parser: parsed.parser,
