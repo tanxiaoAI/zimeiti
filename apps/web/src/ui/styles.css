@@ -837,7 +837,13 @@ textarea.input-field {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 6px;
+  gap: 4px;
+}
+
+.topic-library-production-btn {
+  padding-left: 8px;
+  padding-right: 8px;
+  min-width: 88px;
 }
 
 .topic-library-drag-head,

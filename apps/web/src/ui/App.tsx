@@ -82,6 +82,20 @@ function removeScopedConfig(accountId: string, tab: string, field: string) {
   localStorage.removeItem(getLegacyConfigKey(tab, field));
 }
 
+function readScopedJsonConfig<T>(accountId: string, tab: string, field: string, fallback: T): T {
+  const raw = readScopedConfig(accountId, tab, field);
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeScopedJsonConfig(accountId: string, tab: string, field: string, value: unknown) {
+  writeScopedConfig(accountId, tab, field, JSON.stringify(value));
+}
+
 function clearProjectScopedConfig(accountId: string) {
   if (!accountId) return;
   for (const key of Object.keys(localStorage)) {
@@ -301,6 +315,20 @@ const CONTENT_PRODUCTION_STEPS = [
   { id: "final_optimize", title: "AI优化终稿", inputField: "cp_final_optimize_input", resultField: "cp_final_optimize_result", placeholder: "输入终稿优化要求，例如更流畅、更有说服力、更适合发布平台..." }
 ] as const;
 
+const CONTENT_PRODUCTION_DEFAULT_PROMPT = "你是资深中文内容生产助手，请输出清晰、完整、可直接使用的内容。";
+
+function getContentProductionStepConfig(accountId: string, stepId: string) {
+  const model =
+    readScopedConfig(accountId, "content_production", `${stepId}_model`) ||
+    readScopedConfig(accountId, "content_production", "model") ||
+    "gpt-5.5";
+  const prompt =
+    readScopedConfig(accountId, "content_production", `${stepId}_prompt`) ||
+    readScopedConfig(accountId, "content_production", "prompt") ||
+    CONTENT_PRODUCTION_DEFAULT_PROMPT;
+  return { model, prompt };
+}
+
 function truncateTopicTitle(title: string, maxLength = 12) {
   const text = String(title || "").trim();
   if (!text) return "未命名选题";
@@ -310,6 +338,7 @@ function truncateTopicTitle(title: string, maxLength = 12) {
 export default function App() {
   const [activeNav, setActiveNav] = useState("freeChat");
   const [activeTopic, setActiveTopic] = useState<any>(null);
+  const [productionTopicIds, setProductionTopicIds] = useState<string[]>([]);
   const [isConfigOpen, setIsConfigOpen] = useState(false);
   const [isAccountDropdownOpen, setIsAccountDropdownOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -327,6 +356,15 @@ export default function App() {
       setActiveAccountId(accounts[0].id);
     }
   }, [accounts, activeAccountId]);
+
+  useEffect(() => {
+    setActiveTopic(null);
+    if (!activeAccountId) {
+      setProductionTopicIds([]);
+      return;
+    }
+    setProductionTopicIds(readScopedJsonConfig<string[]>(activeAccountId, "content_production", "topic_ids", []));
+  }, [activeAccountId]);
 
   const fetchAccounts = async () => {
     try {
@@ -412,6 +450,9 @@ export default function App() {
   };
 
   const handleTopicSelect = (topic: any) => {
+    const nextIds = Array.from(new Set([...productionTopicIds, topic.id]));
+    setProductionTopicIds(nextIds);
+    writeScopedJsonConfig(activeAccountId, "content_production", "topic_ids", nextIds);
     setActiveTopic(topic);
     setActiveNav("content_production");
   };
@@ -421,9 +462,9 @@ export default function App() {
       case "freeChat": return <FreeChatView activeAccountId={activeAccountId} />;
       case "positioning": return <PositioningView activeAccountId={activeAccountId} />;
       case "teardown": return <TeardownView activeAccountId={activeAccountId} />;
-      case "topic_library": return <TopicLibraryView activeAccountId={activeAccountId} onEnterProduction={handleTopicSelect} />;
+      case "topic_library": return <TopicLibraryView activeAccountId={activeAccountId} onEnterProduction={handleTopicSelect} productionTopicIds={productionTopicIds} />;
       case "generate_cover": return <GenerateCoverView activeAccountId={activeAccountId} />;
-      case "content_production": return <EditorView activeAccountId={activeAccountId} topic={activeTopic} onTopicChange={setActiveTopic} />;
+      case "content_production": return <EditorView activeAccountId={activeAccountId} topic={activeTopic} onTopicChange={setActiveTopic} productionTopicIds={productionTopicIds} />;
       case "analytics": return <AnalyticsView />;
       case "config": return <ConfigView activeAccountId={activeAccountId} />;
       default: return <div className="empty-state">建设中...</div>;
@@ -2165,22 +2206,26 @@ function TopicsView({ onSelectTopic }: { onSelectTopic: (topic: any) => void }) 
   );
 }
 
-function EditorView({ activeAccountId, topic, onTopicChange }: { activeAccountId: string; topic: any; onTopicChange: (topic: any | null) => void }) {
+function EditorView({ activeAccountId, topic, onTopicChange, productionTopicIds }: { activeAccountId: string; topic: any; onTopicChange: (topic: any | null) => void; productionTopicIds: string[] }) {
   const [topics, setTopics] = useState<any[]>([]);
   const [topicsLoading, setTopicsLoading] = useState(false);
   const [activeStepId, setActiveStepId] = useState(CONTENT_PRODUCTION_STEPS[0].id);
   const [selectedTopicId, setSelectedTopicId] = useState("");
   const [selectedModel, setSelectedModel] = useState("gpt-5.5");
-  const [promptValue, setPromptValue] = useState("你是资深中文内容生产助手，请输出清晰、完整、可直接使用的内容。");
+  const [promptValue, setPromptValue] = useState(CONTENT_PRODUCTION_DEFAULT_PROMPT);
   const [inputDraft, setInputDraft] = useState("");
   const [resultDraft, setResultDraft] = useState("");
   const [savingInput, setSavingInput] = useState(false);
   const [savingResult, setSavingResult] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [statusText, setStatusText] = useState("");
+  const [configOpen, setConfigOpen] = useState(false);
 
   const activeStep = CONTENT_PRODUCTION_STEPS.find((item) => item.id === activeStepId) || CONTENT_PRODUCTION_STEPS[0];
-  const selectedTopic = topics.find((item) => item.id === selectedTopicId) || null;
+  const visibleTopics = topics.filter((item) => productionTopicIds.includes(item.id));
+  const selectedTopic = visibleTopics.find((item) => item.id === selectedTopicId) || null;
+  const stepInputHeight = activeStep.id === "topic_adjust" ? 420 : 320;
+  const stepResultHeight = activeStep.id === "topic_adjust" ? 420 : 320;
 
   const fetchTopics = async () => {
     if (!activeAccountId) return;
@@ -2207,28 +2252,27 @@ function EditorView({ activeAccountId, topic, onTopicChange }: { activeAccountId
   }, [activeAccountId]);
 
   useEffect(() => {
-    const savedModel = readScopedConfig(activeAccountId, "content_production", "model");
-    const savedPrompt = readScopedConfig(activeAccountId, "content_production", "prompt");
-    setSelectedModel(savedModel || "gpt-5.5");
-    setPromptValue(savedPrompt || "你是资深中文内容生产助手，请输出清晰、完整、可直接使用的内容。");
-  }, [activeAccountId]);
+    const stepConfig = getContentProductionStepConfig(activeAccountId, activeStepId);
+    setSelectedModel(stepConfig.model);
+    setPromptValue(stepConfig.prompt);
+  }, [activeAccountId, activeStepId]);
 
   useEffect(() => {
-    if (topic?.id) {
+    if (topic?.id && productionTopicIds.includes(topic.id)) {
       setSelectedTopicId(topic.id);
       return;
     }
-    if (!topics.length) {
+    if (!visibleTopics.length) {
       setSelectedTopicId("");
       onTopicChange(null);
       return;
     }
-    if (selectedTopicId && topics.some((item) => item.id === selectedTopicId)) {
+    if (selectedTopicId && visibleTopics.some((item) => item.id === selectedTopicId)) {
       return;
     }
-    setSelectedTopicId(topics[0].id);
-    onTopicChange(topics[0]);
-  }, [topic, topics, selectedTopicId, onTopicChange]);
+    setSelectedTopicId(visibleTopics[0].id);
+    onTopicChange(visibleTopics[0]);
+  }, [topic, visibleTopics, selectedTopicId, onTopicChange, productionTopicIds]);
 
   useEffect(() => {
     if (!selectedTopic) {
@@ -2281,13 +2325,13 @@ function EditorView({ activeAccountId, topic, onTopicChange }: { activeAccountId
 
   const handleModelChange = (nextModel: string) => {
     setSelectedModel(nextModel);
-    writeScopedConfig(activeAccountId, "content_production", "model", nextModel);
-    setStatusText("模型默认配置已保存");
+    writeScopedConfig(activeAccountId, "content_production", `${activeStep.id}_model`, nextModel);
+    setStatusText(`${activeStep.title} 的默认模型已保存`);
   };
 
   const handlePromptBlur = () => {
-    writeScopedConfig(activeAccountId, "content_production", "prompt", promptValue);
-    setStatusText("提示词默认配置已保存");
+    writeScopedConfig(activeAccountId, "content_production", `${activeStep.id}_prompt`, promptValue);
+    setStatusText(`${activeStep.title} 的默认提示词已保存`);
   };
 
   const handleSaveInput = async () => {
@@ -2350,12 +2394,12 @@ function EditorView({ activeAccountId, topic, onTopicChange }: { activeAccountId
     );
   }
 
-  if (!selectedTopic) {
+  if (!productionTopicIds.length || !visibleTopics.length || !selectedTopic) {
     return (
       <div className="empty-state">
         <Edit size={48} />
-        <h3>还没有可生产的选题</h3>
-        <p>请先去“选题库”新增选题，或在选题库列表里点击“进入内容生产”。</p>
+        <h3>还没有进入内容生产的选题</h3>
+        <p>请先在“选题库”里点击“进入内容生产”，这里只展示你真正进入过内容生产的选题。</p>
       </div>
     );
   }
@@ -2364,7 +2408,7 @@ function EditorView({ activeAccountId, topic, onTopicChange }: { activeAccountId
     <div>
       <div className="page-header">
         <h2>内容生产</h2>
-        <p>围绕同一个选题，按 5 个流程分别推进；输入内容与生成结果都会按选题长期保存。</p>
+        <p>仅展示已进入内容生产的选题；每个流程的模型与提示词按流程共享，不同选题复用同一套默认配置。</p>
       </div>
 
       <div className="card" style={{ marginBottom: 20 }}>
@@ -2372,7 +2416,7 @@ function EditorView({ activeAccountId, topic, onTopicChange }: { activeAccountId
           <div>
             <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: 10 }}>选题切换</div>
             <div style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 4 }}>
-              {topics.map((item) => (
+              {visibleTopics.map((item) => (
                 <button
                   key={item.id}
                   className={`nav-item ${selectedTopicId === item.id ? 'active' : ''}`}
@@ -2397,76 +2441,58 @@ function EditorView({ activeAccountId, topic, onTopicChange }: { activeAccountId
           <div>
             <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: 10 }}>生产流程</div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 10 }}>
-              {CONTENT_PRODUCTION_STEPS.map((step) => (
-                <button
-                  key={step.id}
-                  className={`nav-item ${activeStepId === step.id ? 'active' : ''}`}
-                  style={{ justifyContent: 'center', minHeight: 42 }}
-                  onClick={() => setActiveStepId(step.id)}
-                >
-                  {step.title}
-                </button>
-              ))}
+              {CONTENT_PRODUCTION_STEPS.map((step, index) => {
+                const hasResult = Boolean(String(selectedTopic?.[step.resultField] || "").trim());
+                const isActive = activeStepId === step.id;
+                return (
+                  <button
+                    key={step.id}
+                    className={`nav-item ${isActive ? 'active' : ''}`}
+                    style={{
+                      justifyContent: 'center',
+                      minHeight: 52,
+                      background: isActive
+                        ? undefined
+                        : hasResult
+                          ? 'rgba(16, 185, 129, 0.10)'
+                          : undefined,
+                      borderColor: hasResult ? 'rgba(16, 185, 129, 0.25)' : undefined
+                    }}
+                    onClick={() => setActiveStepId(step.id)}
+                  >
+                    {`${index + 1}. ${step.title}`}
+                  </button>
+                );
+              })}
             </div>
           </div>
         </div>
       </div>
 
+      {statusText ? (
+        <div style={{ padding: '10px 12px', borderRadius: 10, background: 'rgba(37,99,235,0.06)', border: '1px solid rgba(37,99,235,0.12)', fontSize: '0.82rem', color: 'var(--primary)', marginBottom: 16 }}>
+          {statusText}
+        </div>
+      ) : null}
+
       <div className="card">
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 16 }}>
-            <div>
-              <label style={{ display: 'block', fontSize: '0.86rem', fontWeight: 700, marginBottom: 8 }}>模型选择</label>
-              <select
-                className="input-field"
-                style={{ padding: '10px 12px', background: 'var(--bg-app)', cursor: 'pointer', appearance: 'auto' }}
-                value={selectedModel}
-                onChange={e => handleModelChange(e.target.value)}
-              >
-                <option value="gpt-5.4">gpt-5.4</option>
-                <option value="gpt-5.5">gpt-5.5</option>
-                <option value="claude-opus-4-6">claude-opus-4-6</option>
-                <option value="claude-sonnet-4-6-thinking">claude-sonnet-4-6-thinking</option>
-                <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
-                <option value="gpts-gemini-3.1-pro-preview">gpts-gemini-3.1-pro-preview</option>
-              </select>
-              <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: 8 }}>
-                当前模型会作为 5 个流程的默认模型，并自动保存。
-              </p>
-            </div>
-            <div>
-              <label style={{ display: 'block', fontSize: '0.86rem', fontWeight: 700, marginBottom: 8 }}>提示词配置</label>
-              <textarea
-                className="input-field"
-                style={{ minHeight: 120 }}
-                value={promptValue}
-                onChange={e => setPromptValue(e.target.value)}
-                onBlur={handlePromptBlur}
-                placeholder="请输入内容生产默认提示词"
-              />
-              <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: 8 }}>
-                提示词对当前账号下全部选题、全部 5 个流程共用，离开输入框后自动保存。
-              </p>
-            </div>
-          </div>
-
-          {statusText ? (
-            <div style={{ padding: '10px 12px', borderRadius: 10, background: 'rgba(37,99,235,0.06)', border: '1px solid rgba(37,99,235,0.12)', fontSize: '0.82rem', color: 'var(--primary)' }}>
-              {statusText}
-            </div>
-          ) : null}
-
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
                 <h3 style={{ margin: 0 }}>{activeStep.title} · 输入内容</h3>
-                <button className="btn-ghost" onClick={handleSaveInput} disabled={savingInput}>
-                  {savingInput ? "保存中..." : "保存输入"}
-                </button>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="btn-ghost" onClick={() => setConfigOpen(true)}>
+                    <Settings size={15} /> 配置
+                  </button>
+                  <button className="btn-ghost" onClick={handleSaveInput} disabled={savingInput}>
+                    {savingInput ? "保存中..." : "保存输入"}
+                  </button>
+                </div>
               </div>
               <textarea
                 className="input-field"
-                style={{ minHeight: 320, resize: 'vertical' }}
+                style={{ minHeight: stepInputHeight, resize: 'vertical' }}
                 value={inputDraft}
                 onChange={e => setInputDraft(e.target.value)}
                 placeholder={activeStep.placeholder}
@@ -2487,7 +2513,7 @@ function EditorView({ activeAccountId, topic, onTopicChange }: { activeAccountId
               </div>
               <textarea
                 className="input-field"
-                style={{ minHeight: 320, resize: 'vertical' }}
+                style={{ minHeight: stepResultHeight, resize: 'vertical' }}
                 value={resultDraft}
                 onChange={e => setResultDraft(e.target.value)}
                 placeholder="这里会显示当前流程的 AI 结果，你也可以继续手动修改。"
@@ -2496,6 +2522,57 @@ function EditorView({ activeAccountId, topic, onTopicChange }: { activeAccountId
           </div>
         </div>
       </div>
+
+      {configOpen ? (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, 0.35)', zIndex: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          <div className="card" style={{ width: 'min(720px, 100%)', maxHeight: '90vh', overflow: 'auto', position: 'relative' }}>
+            <button className="btn-icon" style={{ position: 'absolute', top: 14, right: 14 }} onClick={() => setConfigOpen(false)}>
+              <X size={16} />
+            </button>
+            <div className="page-header" style={{ marginBottom: 18 }}>
+              <h2 style={{ fontSize: '1.1rem' }}>{activeStep.title} 配置</h2>
+              <p>当前流程的模型和提示词会自动保存，并同步作用于其他选题的同一流程。</p>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.86rem', fontWeight: 700, marginBottom: 8 }}>模型选择</label>
+                <select
+                  className="input-field"
+                  style={{ padding: '10px 12px', background: 'var(--bg-app)', cursor: 'pointer', appearance: 'auto' }}
+                  value={selectedModel}
+                  onChange={e => handleModelChange(e.target.value)}
+                >
+                  <option value="gpt-5.4">gpt-5.4</option>
+                  <option value="gpt-5.5">gpt-5.5</option>
+                  <option value="claude-opus-4-6">claude-opus-4-6</option>
+                  <option value="claude-sonnet-4-6-thinking">claude-sonnet-4-6-thinking</option>
+                  <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
+                  <option value="gpts-gemini-3.1-pro-preview">gpts-gemini-3.1-pro-preview</option>
+                </select>
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.86rem', fontWeight: 700, marginBottom: 8 }}>提示词配置</label>
+                <textarea
+                  className="input-field"
+                  style={{ minHeight: 180 }}
+                  value={promptValue}
+                  onChange={e => setPromptValue(e.target.value)}
+                  onBlur={handlePromptBlur}
+                  placeholder={`请输入 ${activeStep.title} 的默认提示词`}
+                />
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: 8 }}>
+                  当前修改只影响“{activeStep.title}”这个流程，不影响其他流程。
+                </p>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <button className="btn-primary" onClick={() => { handlePromptBlur(); setConfigOpen(false); }}>
+                  完成配置
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

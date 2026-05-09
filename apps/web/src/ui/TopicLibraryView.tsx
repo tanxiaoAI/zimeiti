@@ -353,7 +353,7 @@ function ExpandableTextCell({
   );
 }
 
-export function TopicLibraryView({ activeAccountId, onEnterProduction }: { activeAccountId: string; onEnterProduction?: (topic: any) => void }) {
+export function TopicLibraryView({ activeAccountId, onEnterProduction, productionTopicIds = [] }: { activeAccountId: string; onEnterProduction?: (topic: any) => void; productionTopicIds?: string[] }) {
   const [topics, setTopics] = useState<any[]>([]);
   const [options, setOptions] = useState<{ judgment_result: any[], source: any[] }>({ judgment_result: [], source: [] });
   const [optionModal, setOptionModal] = useState<string | null>(null);
@@ -736,13 +736,13 @@ export function TopicLibraryView({ activeAccountId, onEnterProduction }: { activ
               <TableHead style={{ width: 156 }}>参考链接</TableHead>
               <TableHead style={{ width: 72 }}>匹配平台</TableHead>
               <TableHead style={{ width: 72 }}>参考文案</TableHead>
-              <TableHead style={{ width: 88 }}>
+              <TableHead style={{ width: 80 }}>
                 <div className="topic-library-head-inline">
                   AI分析
                   <Button variant="ghost" size="icon" className="topic-library-head-settings" onClick={() => setAnalysisConfigOpen(true)}><Settings size={13} /></Button>
                 </div>
               </TableHead>
-              <TableHead className="sticky-col-right" style={{ width: 148, textAlign: 'center' }}>操作</TableHead>
+              <TableHead className="sticky-col-right" style={{ width: 132, textAlign: 'center' }}>操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -756,6 +756,7 @@ export function TopicLibraryView({ activeAccountId, onEnterProduction }: { activ
               >
                 {(() => {
                   const hasVisibleStoredAnalysis = buildStoredAnalysisResults(topic, topicModels).length > 0;
+                  const hasEnteredProduction = productionTopicIds.includes(topic.id);
                   return (
                     <>
                       <TableCell className="topic-library-drag-cell sticky-drag-col">
@@ -847,10 +848,10 @@ export function TopicLibraryView({ activeAccountId, onEnterProduction }: { activ
                           <Button
                             variant="ghost"
                             size="sm"
-                            className="topic-library-action topic-library-action-view-analysis"
+                            className="topic-library-action topic-library-action-view-analysis topic-library-production-btn"
                             onClick={() => onEnterProduction?.(topic)}
                           >
-                            进入内容生产
+                            {hasEnteredProduction ? "查看内容生产" : "进入内容生产"}
                           </Button>
                           <Button variant="ghost" size="icon" className="topic-library-delete-btn" onClick={() => handleDeleteRecord(topic.id)}>
                             <Trash2 size={14} className="text-muted-foreground" />
