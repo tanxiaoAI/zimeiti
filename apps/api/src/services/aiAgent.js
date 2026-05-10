@@ -22,8 +22,19 @@ const MODEL_PRICING_USD_PER_MILLION = {
   "gpts-gemini-3.1-pro-preview": { input: 2, output: 12 }
 };
 
+function normalizeEnvValue(value) {
+  const trimmed = String(value || "").trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
 function getRequiredEnv(name) {
-  const value = String(process.env[name] || "").trim();
+  const value = normalizeEnvValue(process.env[name]);
   if (!value) {
     throw new Error(`Missing required env: ${name}`);
   }
@@ -113,6 +124,22 @@ ${JSON.stringify(currentProfile, null, 2)}
 
 function buildChatInstruction(systemInstruction) {
   return systemInstruction || "你是一个专业、友好、简洁的中文助手。";
+}
+
+function resolveContentProductionRequestOptions(targetModel) {
+  const normalizedModel = String(targetModel || "").trim();
+  if (normalizedModel === "claude-opus-4-6" || normalizedModel === "claude-opus-4-7") {
+    return {
+      // GPTS upstream is unstable for long-form Opus generations; tighter caps are more reliable.
+      maxTokens: Number(process.env.CONTENT_PRODUCTION_OPUS_MAX_TOKENS || 512),
+      timeoutMs: Number(process.env.CONTENT_PRODUCTION_OPUS_TIMEOUT_MS || 150000)
+    };
+  }
+
+  return {
+    maxTokens: Number(process.env.CONTENT_PRODUCTION_MAX_TOKENS || 4096),
+    timeoutMs: Number(process.env.CONTENT_PRODUCTION_TIMEOUT_MS || 150000)
+  };
 }
 
 export async function* streamChatWithGemini(systemInstruction, history, newMessage, currentProfile, projectId, targetModel, options = {}) {
@@ -368,6 +395,7 @@ export async function analyzeTopicLibraryContent(systemInstruction, topicData, t
 export async function generateContentProductionStep(systemInstruction, stepData, targetModel) {
   const modelConfig = resolveModelConfig(targetModel);
   const { actualModelName, useGptsChatApi, useGptsMessagesApi } = modelConfig;
+  const requestOptions = resolveContentProductionRequestOptions(targetModel);
 
   const API_URL = useGptsChatApi
     ? `${GPTS_API_BASE_URL}/v1/chat/completions`
@@ -399,11 +427,7 @@ export async function generateContentProductionStep(systemInstruction, stepData,
     systemInstruction || "你是资深中文内容生产助手，请输出清晰、完整、可直接使用的内容。",
     promptText,
     null,
-    {
-      // Content production often requests full drafts; keep output bounded to reduce 504s on Claude.
-      maxTokens: Number(process.env.CONTENT_PRODUCTION_MAX_TOKENS || 4096),
-      timeoutMs: Number(process.env.CONTENT_PRODUCTION_TIMEOUT_MS || 150000)
-    }
+    requestOptions
   );
 }
 

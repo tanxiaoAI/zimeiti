@@ -77,8 +77,19 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 
+function normalizeEnvValue(value) {
+  const trimmed = String(value || "").trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
 function getRequiredEnv(name) {
-  const value = String(process.env[name] || "").trim();
+  const value = normalizeEnvValue(process.env[name]);
   if (!value) {
     throw new Error(`Missing required env: ${name}`);
   }
@@ -92,7 +103,7 @@ function buildPreviewText(value, maxLength = 240) {
 }
 
 function getEnvValue(name) {
-  return String(process.env[name] || "").trim();
+  return normalizeEnvValue(process.env[name]);
 }
 
 function isEnvConfigured(name) {
