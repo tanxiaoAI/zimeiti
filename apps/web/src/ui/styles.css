@@ -775,13 +775,16 @@ textarea.input-field {
 }
 
 .topic-library-table-scroll {
-  overflow-x: hidden;
+  overflow-x: auto;
   overflow-y: hidden;
-  padding-bottom: 0;
+  padding-bottom: 6px;
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
 }
 
 .topic-library-table {
-  min-width: 100%;
+  min-width: 1180px;
+  width: max-content;
   table-layout: fixed;
 }
 
@@ -1079,28 +1082,6 @@ input.topic-library-input-expanded {
 .topic-library-action-view-analysis:hover {
   color: #6d28d9;
   background: rgba(124, 58, 237, 0.16);
-}
-
-.topic-library-analysis-cell {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
-}
-
-.topic-library-analysis-preview {
-  font-size: 0.76rem;
-  line-height: 1.45;
-  color: var(--text-main);
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  word-break: break-word;
-}
-
-.topic-library-analysis-preview.is-empty {
-  color: var(--text-muted);
 }
 
 .topic-library-add-btn {

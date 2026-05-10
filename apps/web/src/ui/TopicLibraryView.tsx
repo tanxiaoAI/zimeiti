@@ -133,20 +133,6 @@ function buildStoredAnalysisResults(topic: any, targetModels: string[]) {
   }).filter(Boolean) as TopicAiResultEntry[];
 }
 
-function buildTopicAnalysisPreview(topic: any, targetModels: string[]) {
-  const storedResults = buildStoredAnalysisResults(topic, targetModels);
-  if (!storedResults.length) return "";
-
-  const agreedResults = storedResults.filter((item) => item?.agreed && item?.result && !item?.error);
-  const preferred = agreedResults[0] || storedResults.find((item) => item?.result && !item?.error) || storedResults.find((item) => item?.error) || storedResults[0];
-  if (!preferred) return "";
-
-  const sourceText = preferred.error || preferred.result || "";
-  const normalized = String(sourceText).replace(/\s+/g, " ").trim();
-  if (!normalized) return "";
-  return normalized.length > 88 ? `${normalized.slice(0, 88)}...` : normalized;
-}
-
 function EditableInput({ value, onChange, placeholder, style, className }: any) {
   const [localValue, setLocalValue] = useState(value || "");
   
@@ -673,7 +659,6 @@ export function TopicLibraryView({ activeAccountId, onEnterProduction, productio
               >
                 {(() => {
                   const hasVisibleStoredAnalysis = buildStoredAnalysisResults(topic, topicModels).length > 0;
-                  const analysisPreview = buildTopicAnalysisPreview(topic, topicModels);
                   const hasEnteredProduction = productionTopicIds.includes(topic.id);
                   return (
                     <>
@@ -752,19 +737,14 @@ export function TopicLibraryView({ activeAccountId, onEnterProduction, productio
                         </Button>
                       </TableCell>
                       <TableCell>
-                        <div className="topic-library-analysis-cell">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className={`topic-library-action ${topicAnalysisJobs[topic.id]?.analyzing ? "topic-library-action-start-analysis" : (hasVisibleStoredAnalysis ? "topic-library-action-view-analysis" : "topic-library-action-start-analysis")}`}
-                            onClick={() => setAiDrawer(topic)}
-                          >
-                            {topicAnalysisJobs[topic.id]?.analyzing ? "分析中" : (hasVisibleStoredAnalysis ? "查看分析" : "开始分析")}
-                          </Button>
-                          <div className={`topic-library-analysis-preview ${analysisPreview ? "" : "is-empty"}`.trim()}>
-                            {analysisPreview || "暂无分析结果"}
-                          </div>
-                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className={`topic-library-action ${topicAnalysisJobs[topic.id]?.analyzing ? "topic-library-action-start-analysis" : (hasVisibleStoredAnalysis ? "topic-library-action-view-analysis" : "topic-library-action-start-analysis")}`}
+                          onClick={() => setAiDrawer(topic)}
+                        >
+                          {topicAnalysisJobs[topic.id]?.analyzing ? "分析中" : (hasVisibleStoredAnalysis ? "查看分析" : "开始分析")}
+                        </Button>
                       </TableCell>
                       <TableCell className="sticky-col-right text-center">
                         <div className="topic-library-row-actions">
