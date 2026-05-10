@@ -136,6 +136,14 @@ function resolveContentProductionRequestOptions(targetModel) {
     };
   }
 
+  if (normalizedModel === "claude-sonnet-4-6-thinking") {
+    return {
+      // Sonnet via GPTS messages is more stable with smaller content-production outputs.
+      maxTokens: Number(process.env.CONTENT_PRODUCTION_SONNET_MAX_TOKENS || 2048),
+      timeoutMs: Number(process.env.CONTENT_PRODUCTION_SONNET_TIMEOUT_MS || 150000)
+    };
+  }
+
   return {
     maxTokens: Number(process.env.CONTENT_PRODUCTION_MAX_TOKENS || 4096),
     timeoutMs: Number(process.env.CONTENT_PRODUCTION_TIMEOUT_MS || 150000)
@@ -499,8 +507,6 @@ async function callLlmWithPrompt(API_URL, actualModelName, apiConfig, systemInst
   }
 
   const timeoutMs = Number(requestOptions.timeoutMs || process.env.LLM_REQUEST_TIMEOUT_MS || 90000);
-  const RETRYABLE_STATUS_CODES = new Set([502, 503, 504, 520, 522, 524, 570]);
-  const shouldRetry = (status) => RETRYABLE_STATUS_CODES.has(status);
 
   const requestOnce = async () => {
     const controller = new AbortController();
@@ -522,10 +528,8 @@ async function callLlmWithPrompt(API_URL, actualModelName, apiConfig, systemInst
     }
   };
 
-  let response = await requestOnce();
-  if (!response.ok && shouldRetry(response.status)) {
-    response = await requestOnce();
-  }
+  // Avoid automatic replays because upstream retries can create duplicate billable requests.
+  const response = await requestOnce();
 
   if (!response.ok) {
     const errorText = await response.text();
