@@ -59,6 +59,20 @@ function formatDateTime(isoStr: string) {
   return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
+function formatLinkPreview(value: string, placeholder: string) {
+  const raw = String(value || "").trim();
+  if (!raw) return placeholder;
+  try {
+    const parsed = new URL(raw);
+    const host = parsed.hostname.replace(/^www\./i, "");
+    const path = parsed.pathname && parsed.pathname !== "/" ? parsed.pathname : "";
+    const compactPath = path.length > 18 ? `${path.slice(0, 18)}...` : path;
+    return `${host}${compactPath}` || host || raw;
+  } catch (error) {
+    return raw.length > 24 ? `${raw.slice(0, 24)}...` : raw;
+  }
+}
+
 
 function parseStoredTopicAnalysisResult(fallbackModel: string, value: string | null | undefined) {
   if (!value) return null;
@@ -208,7 +222,8 @@ function ExpandableTextCell({
   className,
   style,
   multiline = true,
-  isLink = false
+  isLink = false,
+  displayValue
 }: any) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value || "");
@@ -262,7 +277,7 @@ function ExpandableTextCell({
       title={value || placeholder}
     >
       {isLink && value ? <Link2 size={12} className="topic-library-link-icon" /> : null}
-      <span>{value || placeholder}</span>
+      <span>{displayValue || value || placeholder}</span>
     </button>
   );
 }
@@ -717,6 +732,7 @@ export function TopicLibraryView({ activeAccountId, onEnterProduction, productio
                           className="topic-library-text-cell topic-library-link-cell topic-library-text-preview-1line"
                           style={{ color: 'var(--primary)' }}
                           value={topic.ref_link || ""}
+                          displayValue={formatLinkPreview(topic.ref_link || "", "输入链接...")}
                           onChange={(val: string) => handleUpdateRecord(topic.id, 'ref_link', val)}
                           placeholder="输入链接..."
                           multiline={false}
