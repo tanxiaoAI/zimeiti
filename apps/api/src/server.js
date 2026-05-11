@@ -796,6 +796,50 @@ async function extractAudioTrackToPublicUrl(localPath, req, prefix = "topic_audi
   };
 }
 
+async function splitAudioTrackToPublicUrls(localPath, req, prefix = "topic_audio_segment") {
+  await ensureFfmpegAvailable();
+  if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+
+  const segmentSeconds = Math.max(30, Number(process.env.VOLC_ASR_SEGMENT_SECONDS || 150));
+  const segmentPrefix = `${prefix}_${Date.now()}_${randomUUID()}`;
+  const outPattern = path.join(uploadsDir, `${segmentPrefix}_%03d.mp3`);
+
+  await runProcess("ffmpeg", [
+    "-y",
+    "-loglevel",
+    "error",
+    "-i",
+    localPath,
+    "-f",
+    "segment",
+    "-segment_time",
+    String(segmentSeconds),
+    "-reset_timestamps",
+    "1",
+    "-c",
+    "copy",
+    outPattern
+  ], {
+    timeoutMs: Number(process.env.FFMPEG_SEGMENT_TIMEOUT_MS || 120000)
+  });
+
+  const filenames = fs.readdirSync(uploadsDir)
+    .filter((name) => name.startsWith(`${segmentPrefix}_`) && name.endsWith(".mp3"))
+    .sort();
+
+  if (filenames.length === 0) {
+    throw new Error("ffmpeg 已执行，但未生成音频分片");
+  }
+
+  return filenames.map((filename, index) => ({
+    index,
+    filename,
+    localPath: path.join(uploadsDir, filename),
+    publicUrl: `${getMediaPublicBaseUrl(req)}/static/uploads/${filename}`,
+    segmentSeconds
+  }));
+}
+
 async function downloadMediaByYtDlp(sourceUrl, req, prefix = "topic_media") {
   await ensureYtDlpAvailable();
   if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
@@ -1089,6 +1133,66 @@ async function transcribeMediaWithFallback(mediaUrls, options = {}) {
   throw error;
 }
 
+async function transcribeSegmentedMediaWithVolc(segments, options = {}) {
+  const transcripts = [];
+  const segmentDebugs = [];
+  const segmentDurationMs = Number(options.segmentDurationMs || 0) || null;
+
+  for (const segment of segments || []) {
+    try {
+      const result = await transcribeMediaWithFallback([segment.publicUrl], {
+        durationMs: segmentDurationMs
+      });
+      const text = String(result.text || "").trim();
+      if (text) transcripts.push(text);
+      segmentDebugs.push({
+        ok: true,
+        index: segment.index,
+        mediaUrl: segment.publicUrl,
+        filename: segment.filename,
+        textPreview: buildPreviewText(text, 120),
+        debug: result.debug
+      });
+    } catch (error) {
+      segmentDebugs.push({
+        ok: false,
+        index: segment.index,
+        mediaUrl: segment.publicUrl,
+        filename: segment.filename,
+        error: error.message,
+        debug: error.stepDebug || null
+      });
+      error.stepDebug = {
+        ok: false,
+        stage: "volc_asr_segmented",
+        segments: segmentDebugs
+      };
+      throw error;
+    }
+  }
+
+  const mergedText = transcripts.join("\n").trim();
+  if (!mergedText) {
+    const error = new Error("分段语音识别完成，但未返回可用文本");
+    error.stepDebug = {
+      ok: false,
+      stage: "volc_asr_segmented",
+      segments: segmentDebugs
+    };
+    throw error;
+  }
+
+  return {
+    text: mergedText,
+    debug: {
+      ok: true,
+      stage: "volc_asr_segmented",
+      segment_count: segments.length,
+      segments: segmentDebugs
+    }
+  };
+}
+
 async function executeTopicLibraryExtract(link, platform, requestMeta, onProgress) {
   const requestLike = buildRequestFromSnapshot(requestMeta);
   const notifyProgress = async ({ stage, progressText, debugJson }) => {
@@ -1125,6 +1229,7 @@ async function executeTopicLibraryExtract(link, platform, requestMeta, onProgres
   let mirroredMediaUrl = null;
   let mirroredAudioUrl = null;
   let mirroredLocalPath = null;
+  let audioSegments = [];
   const mirrorAttempts = [];
   if (platform === "抖音") {
     try {
@@ -1176,12 +1281,23 @@ async function executeTopicLibraryExtract(link, platform, requestMeta, onProgres
     try {
       const audioResult = await extractAudioTrackToPublicUrl(mirroredLocalPath, requestLike, "topic_extract_audio");
       mirroredAudioUrl = audioResult.publicUrl;
+      const shouldSegmentAudio = Number(parsed.durationMs || 0) >= Number(process.env.VOLC_ASR_SEGMENT_THRESHOLD_MS || 180000);
+      if (shouldSegmentAudio) {
+        audioSegments = await splitAudioTrackToPublicUrls(audioResult.localPath, requestLike, "topic_extract_audio_seg");
+      }
       audioExtract = {
         ok: true,
         method: audioResult.method,
         mirroredAudioUrl,
         localPath: audioResult.localPath,
-        filename: audioResult.filename
+        filename: audioResult.filename,
+        segmented: audioSegments.length > 0,
+        segmentCount: audioSegments.length,
+        segments: audioSegments.map((segment) => ({
+          index: segment.index,
+          filename: segment.filename,
+          publicUrl: segment.publicUrl
+        }))
       };
     } catch (audioError) {
       console.warn("topic-library extract audio convert failed:", audioError.message);
@@ -1227,13 +1343,17 @@ async function executeTopicLibraryExtract(link, platform, requestMeta, onProgres
   let fallbackContent = "";
   let extractFallback = null;
   try {
-    const transcribeResult = await transcribeMediaWithFallback([
-      mirroredAudioUrl,
-      mirroredMediaUrl,
-      ...resolvedMediaUrls
-    ], {
-      durationMs: parsed.durationMs
-    });
+    const transcribeResult = audioSegments.length > 0
+      ? await transcribeSegmentedMediaWithVolc(audioSegments, {
+          segmentDurationMs: Number(process.env.VOLC_ASR_SEGMENT_SECONDS || 150) * 1000
+        })
+      : await transcribeMediaWithFallback([
+          mirroredAudioUrl,
+          mirroredMediaUrl,
+          ...resolvedMediaUrls
+        ], {
+          durationMs: parsed.durationMs
+        });
     transcript = transcribeResult.text;
     extractDebug.asr = transcribeResult.debug;
   } catch (transcribeError) {
