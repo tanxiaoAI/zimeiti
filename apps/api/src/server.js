@@ -64,6 +64,7 @@ import {
   reorderTopicLibraryItems,
   createTopicExtractJob,
   getTopicExtractJob,
+  findLatestActiveTopicExtractJob,
   updateTopicExtractJob
 } from "./services/appStore.js";
 import { addVideoTeardown, listVideoTeardowns, getVideoTeardown, updateVideoTeardown, deleteVideoTeardown } from "./services/appStore.js";
@@ -1987,22 +1988,33 @@ app.post("/api/v1/projects/:projectId/topic-library/extract", authApiKey, async 
   }
 
   try {
-    const job = createTopicExtractJob(project.id, {
+    let job = findLatestActiveTopicExtractJob(project.id, {
       topic_id: topic_id || null,
       link,
-      platform,
-      status: "pending",
-      stage: "queued",
-      progress_text: "任务已创建，等待开始"
+      platform
     });
-    const requestMeta = snapshotRequestMeta(req);
-    void runTopicLibraryExtractJob(job.id, requestMeta);
+    let reused = true;
+
+    if (!job) {
+      reused = false;
+      job = createTopicExtractJob(project.id, {
+        topic_id: topic_id || null,
+        link,
+        platform,
+        status: "pending",
+        stage: "queued",
+        progress_text: "任务已创建，等待开始"
+      });
+      const requestMeta = snapshotRequestMeta(req);
+      void runTopicLibraryExtractJob(job.id, requestMeta);
+    }
 
     res.json(ok({
       job_id: job.id,
       status: job.status,
       stage: job.stage,
-      progress_text: job.progress_text
+      progress_text: job.progress_text,
+      reused
     }, request_id));
   } catch (e) {
     console.error(e);

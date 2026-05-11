@@ -388,6 +388,21 @@ export function getTopicExtractJob(id) {
   return parseTopicExtractJob(row);
 }
 
+export function findLatestActiveTopicExtractJob(project_id, { topic_id, link, platform }) {
+  const row = db.prepare(`
+    SELECT *
+    FROM topic_extract_jobs
+    WHERE project_id = ?
+      AND COALESCE(topic_id, '') = COALESCE(?, '')
+      AND link = ?
+      AND COALESCE(platform, '') = COALESCE(?, '')
+      AND status IN ('pending', 'running')
+    ORDER BY created_at DESC
+    LIMIT 1
+  `).get(project_id, topic_id || null, link, platform || null);
+  return parseTopicExtractJob(row);
+}
+
 export function updateTopicExtractJob(id, data) {
   const fields = Object.keys(data).filter((key) => key !== "id" && data[key] !== undefined);
   if (fields.length === 0) return getTopicExtractJob(id);

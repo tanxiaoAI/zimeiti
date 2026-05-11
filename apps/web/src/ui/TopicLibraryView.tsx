@@ -52,6 +52,24 @@ function writeTopicLibraryConfig(accountId: string, field: string, value: string
   localStorage.setItem(getTopicLibraryConfigKey(accountId, field), value);
 }
 
+function getTopicExtractJobStorageKey(accountId: string, topicId: string) {
+  return `topic_library:${accountId}:${topicId}:extract_job_id`;
+}
+
+function readTopicExtractJobId(accountId: string, topicId: string) {
+  if (!accountId || !topicId) return "";
+  return localStorage.getItem(getTopicExtractJobStorageKey(accountId, topicId)) || "";
+}
+
+function writeTopicExtractJobId(accountId: string, topicId: string, jobId: string) {
+  if (!accountId || !topicId) return;
+  if (jobId) {
+    localStorage.setItem(getTopicExtractJobStorageKey(accountId, topicId), jobId);
+  } else {
+    localStorage.removeItem(getTopicExtractJobStorageKey(accountId, topicId));
+  }
+}
+
 function formatDateTime(isoStr: string) {
   if (!isoStr) return "";
   const str = isoStr.endsWith('Z') ? isoStr : isoStr.replace(' ', 'T') + 'Z';
@@ -922,6 +940,11 @@ function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
     }
   }, [topic]);
 
+  const clearStoredJobId = () => {
+    if (!activeAccountId || !topic?.id) return;
+    writeTopicExtractJobId(activeAccountId, topic.id, "");
+  };
+
   const applyExtractResult = (data: any) => {
     const transcriptContent = typeof data?.content === "string" ? data.content.trim() : "";
     const debugText = buildExtractDebugText(data?.extract_debug);
@@ -934,6 +957,7 @@ function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
       setContent(transcriptContent);
       onUpdate(topic.id, 'ref_content', transcriptContent);
       setExtractStatusText("提取完成，已填入参考文案");
+      clearStoredJobId();
       return;
     }
 
@@ -948,12 +972,77 @@ function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
       } else {
         setExtractStatusText("提取完成，但未自动覆盖当前内容");
       }
+      clearStoredJobId();
       return;
     }
 
     setExtractStatusText("提取结束，但没有拿到可用文案");
+    clearStoredJobId();
     alert(`提取失败：没有拿到可用的视频文案${debugText ? `\n\n${debugText}` : ""}`);
   };
+
+  const pollExtractJob = async (jobId: string, options?: { silentOnTimeout?: boolean }) => {
+    let finalJob: any = null;
+    for (let i = 0; i < 720; i += 1) {
+      const job: any = await apiGet(`/api/v1/projects/${activeAccountId}/topic-library/extract/${jobId}`, "demo-key");
+      finalJob = job;
+      setExtractStatusText(job?.progress_text || "正在提取中...");
+
+      if (job?.status === "succeeded") {
+        applyExtractResult(job?.result_json || {});
+        return true;
+      }
+
+      if (job?.status === "failed") {
+        const debugText = buildExtractDebugText(job?.debug_json);
+        setExtractStatusText("提取失败");
+        clearStoredJobId();
+        alert(`${job?.error_message || "提取失败"}${debugText ? `\n\n${debugText}` : ""}`);
+        return true;
+      }
+
+      await new Promise((resolve) => window.setTimeout(resolve, 1500));
+    }
+
+    const timeoutMessage = finalJob?.progress_text
+      ? `${finalJob.progress_text}，后台任务仍在继续。请稍后重新打开查看结果，或再次点击“提取”继续等待。`
+      : "提取任务仍在后台执行，请稍后重新打开查看结果，或再次点击“提取”继续等待。";
+    setExtractStatusText(timeoutMessage);
+    if (!options?.silentOnTimeout) {
+      alert(timeoutMessage);
+    }
+    return false;
+  };
+
+  useEffect(() => {
+    if (!topic?.id || !activeAccountId) return;
+    const existingJobId = readTopicExtractJobId(activeAccountId, topic.id);
+    if (!existingJobId) return;
+
+    let cancelled = false;
+    setExtracting(true);
+    setExtractStatusText("检测到上次提取任务仍在进行，正在恢复进度...");
+
+    (async () => {
+      try {
+        if (!cancelled) {
+          await pollExtractJob(existingJobId, { silentOnTimeout: true });
+        }
+      } catch (_error) {
+        if (!cancelled) {
+          setExtractStatusText("上次提取任务恢复失败，可重新点击提取继续");
+        }
+      } finally {
+        if (!cancelled) {
+          setExtracting(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [topic?.id, activeAccountId]);
 
   const handleExtract = async () => {
     if (!topic?.ref_link) {
@@ -972,37 +1061,12 @@ function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
       if (!jobId) {
         throw new Error("提取任务创建失败，请稍后重试");
       }
-
-      let finalJob: any = null;
-      for (let i = 0; i < 180; i += 1) {
-        const job: any = await apiGet(`/api/v1/projects/${activeAccountId}/topic-library/extract/${jobId}`, "demo-key");
-        finalJob = job;
-        setExtractStatusText(job?.progress_text || "正在提取中...");
-
-        if (job?.status === "succeeded") {
-          applyExtractResult(job?.result_json || {});
-          return;
-        }
-
-        if (job?.status === "failed") {
-          const debugText = buildExtractDebugText(job?.debug_json);
-          setExtractStatusText("提取失败");
-          alert(`${job?.error_message || "提取失败"}${debugText ? `\n\n${debugText}` : ""}`);
-          return;
-        }
-
-        await new Promise((resolve) => window.setTimeout(resolve, 1500));
-      }
-
-      throw new Error(
-        finalJob?.progress_text
-          ? `${finalJob.progress_text}，请求等待超时，请稍后重试或重新打开查看结果`
-          : "提取任务等待超时，请稍后重试"
-      );
+      writeTopicExtractJobId(activeAccountId, topic.id, jobId);
+      await pollExtractJob(jobId);
     } catch (e: any) {
       const rawMessage = String(e?.message || "未知错误");
       const friendlyMessage = /Failed to fetch|NetworkError|Load failed|fetch/i.test(rawMessage)
-        ? "网络连接中断，任务可能仍在后台执行。请稍后重试，或刷新后重新打开提取抽屉查看。"
+        ? "网络连接中断，后台任务可能仍在继续。请稍后重新打开查看结果，或再次点击“提取”继续等待。"
         : rawMessage;
       setExtractStatusText("提取异常，请稍后重试");
       alert("提取异常: " + friendlyMessage);
