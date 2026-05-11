@@ -1008,10 +1008,12 @@ async function submitBailianAsrTask(mediaUrl) {
 }
 
 async function queryBailianAsrTask(taskId) {
-  const timeoutMs = Number(process.env.BAILIAN_ASR_TIMEOUT_MS || 30000);
+  const timeoutMs = Number(process.env.BAILIAN_ASR_QUERY_TIMEOUT_MS || process.env.BAILIAN_ASR_TIMEOUT_MS || 60000);
   const response = await fetchWithTimeout(`${getBailianApiBaseUrl()}/tasks/${taskId}`, {
     method: "GET",
     headers: {
+      "X-DashScope-Async": "enable",
+      "Content-Type": "application/json",
       ...getBailianAuthHeaders()
     }
   }, timeoutMs, "百炼 ASR query 超时");
