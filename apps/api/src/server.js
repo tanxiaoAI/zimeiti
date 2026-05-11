@@ -1050,6 +1050,48 @@ function snapshotRequestMeta(req) {
   };
 }
 
+function parseDateMs(value) {
+  const time = value ? new Date(value).getTime() : NaN;
+  return Number.isFinite(time) ? time : 0;
+}
+
+function getTopicExtractJobStaleTimeoutMs() {
+  return Math.max(60000, Number(process.env.TOPIC_EXTRACT_JOB_STALE_MS || 900000));
+}
+
+function buildStaleExtractJobErrorMessage(job) {
+  const staleMinutes = Math.max(1, Math.round(getTopicExtractJobStaleTimeoutMs() / 60000));
+  return `提取任务已失效：任务超过 ${staleMinutes} 分钟未更新，可能因服务重启或异常中断。请重新点击“提取”发起新任务。`;
+}
+
+function isTopicExtractJobStale(job) {
+  if (!job || (job.status !== "pending" && job.status !== "running")) return false;
+  const now = Date.now();
+  const latestActivityMs =
+    parseDateMs(job.updated_at) ||
+    parseDateMs(job.started_at) ||
+    parseDateMs(job.created_at);
+  if (!latestActivityMs) return false;
+  return now - latestActivityMs > getTopicExtractJobStaleTimeoutMs();
+}
+
+function expireStaleTopicExtractJob(job) {
+  if (!isTopicExtractJobStale(job)) return job;
+  return updateTopicExtractJob(job.id, {
+    status: "failed",
+    stage: "failed",
+    progress_text: "提取任务已失效，请重新提取",
+    error_message: buildStaleExtractJobErrorMessage(job),
+    debug_json: {
+      ...(job.debug_json || {}),
+      stale_job: true,
+      stale_timeout_ms: getTopicExtractJobStaleTimeoutMs(),
+      previous_status: job.status
+    },
+    finished_at: new Date().toISOString()
+  });
+}
+
 function buildRequestFromSnapshot(snapshot) {
   return {
     protocol: snapshot?.protocol || "http",
@@ -2187,6 +2229,12 @@ app.post("/api/v1/projects/:projectId/topic-library/extract", authApiKey, async 
     });
     let reused = true;
 
+    if (job && isTopicExtractJobStale(job)) {
+      expireStaleTopicExtractJob(job);
+      job = null;
+      reused = false;
+    }
+
     if (!job) {
       reused = false;
       job = createTopicExtractJob(project.id, {
@@ -2222,9 +2270,13 @@ app.get("/api/v1/projects/:projectId/topic-library/extract/:jobId", authApiKey, 
   const project = getProject(req.params.projectId);
   if (!project) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在" }, request_id));
 
-  const job = getTopicExtractJob(req.params.jobId);
+  let job = getTopicExtractJob(req.params.jobId);
   if (!job || job.project_id !== project.id) {
     return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "提取任务不存在" }, request_id));
+  }
+
+  if (isTopicExtractJobStale(job)) {
+    job = expireStaleTopicExtractJob(job);
   }
 
   res.json(ok(job, request_id));

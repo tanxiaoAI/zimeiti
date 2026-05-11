@@ -981,7 +981,7 @@ function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
     alert(`提取失败：没有拿到可用的视频文案${debugText ? `\n\n${debugText}` : ""}`);
   };
 
-  const pollExtractJob = async (jobId: string, options?: { silentOnTimeout?: boolean }) => {
+  const pollExtractJob = async (jobId: string, options?: { silentOnTimeout?: boolean; silentOnFailed?: boolean }) => {
     let finalJob: any = null;
     for (let i = 0; i < 720; i += 1) {
       const job: any = await apiGet(`/api/v1/projects/${activeAccountId}/topic-library/extract/${jobId}`, "demo-key");
@@ -995,9 +995,12 @@ function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
 
       if (job?.status === "failed") {
         const debugText = buildExtractDebugText(job?.debug_json);
-        setExtractStatusText("提取失败");
+        const failedMessage = String(job?.error_message || "提取失败");
+        setExtractStatusText(/已失效/.test(failedMessage) ? "上次提取任务已失效，可重新点击提取" : "提取失败");
         clearStoredJobId();
-        alert(`${job?.error_message || "提取失败"}${debugText ? `\n\n${debugText}` : ""}`);
+        if (!options?.silentOnFailed) {
+          alert(`${failedMessage}${debugText ? `\n\n${debugText}` : ""}`);
+        }
         return true;
       }
 
@@ -1026,7 +1029,7 @@ function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
     (async () => {
       try {
         if (!cancelled) {
-          await pollExtractJob(existingJobId, { silentOnTimeout: true });
+          await pollExtractJob(existingJobId, { silentOnTimeout: true, silentOnFailed: true });
         }
       } catch (_error) {
         if (!cancelled) {
