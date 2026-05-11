@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "node src/server.js",
     "start": "NODE_ENV=production node src/server.js",
-    "build": "cd ../../ && npm install --include=dev && npm run build && rm -rf apps/api/dist && cp -R apps/web/dist apps/api/dist",
+    "build": "cd ../../ && npm --workspace apps/web run build && rm -rf apps/api/dist && cp -R apps/web/dist apps/api/dist",
     "lint": "node -c src/server.js"
   },
   "dependencies": {
