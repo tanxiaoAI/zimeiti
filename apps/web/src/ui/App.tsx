@@ -3,7 +3,6 @@ import {
   UserCheck,
   Scissors,
   Edit,
-  MessageCircle,
   Database,
   LineChart,
   Settings,
@@ -32,7 +31,6 @@ const NAV_GROUPS = [
   {
     label: "账号与资产",
     items: [
-      { id: "freeChat", title: "自由对话", icon: MessageCircle },
       { id: "positioning", title: "账号定位", icon: UserCheck },
       { id: "teardown", title: "视频内容拆解", icon: Scissors },
     ]
@@ -515,7 +513,7 @@ function groupGenerationLogs(logs: GenerationLogItem[]) {
 }
 
 export default function App() {
-  const [activeNav, setActiveNav] = useState("freeChat");
+  const [activeNav, setActiveNav] = useState("positioning");
   const [activeTopic, setActiveTopic] = useState<any>(null);
   const [productionTopicIds, setProductionTopicIds] = useState<string[]>([]);
   const [contentProductionJobs, setContentProductionJobs] = useState<Record<string, ContentProductionJobState>>({});
@@ -729,7 +727,6 @@ export default function App() {
 
   const renderContent = () => {
     switch (activeNav) {
-      case "freeChat": return <FreeChatView activeAccountId={activeAccountId} />;
       case "positioning": return <PositioningView activeAccountId={activeAccountId} />;
       case "teardown": return <TeardownView activeAccountId={activeAccountId} />;
       case "topic_library": return <TopicLibraryView activeAccountId={activeAccountId} onEnterProduction={handleTopicSelect} productionTopicIds={productionTopicIds} />;
@@ -994,7 +991,7 @@ export default function App() {
 }
 
 function ConfigView({ activeAccountId }: { activeAccountId: string }) {
-  const [activeTab, setActiveTab] = useState("free_chat");
+  const [activeTab, setActiveTab] = useState("positioning");
   const [promptValue, setPromptValue] = useState("");
   const [greetingValue, setGreetingValue] = useState("");
   const [fileName, setFileName] = useState("");
@@ -1006,7 +1003,6 @@ function ConfigView({ activeAccountId }: { activeAccountId: string }) {
   const [systemConfigError, setSystemConfigError] = useState("");
 
   const configOptions = [
-    { id: "free_chat", title: "自由对话" },
     { id: "positioning", title: "账号定位生成" },
     { id: "teardown", title: "视频内容拆解" },
     { id: "content_production", title: "内容生产" },
@@ -1092,9 +1088,7 @@ function ConfigView({ activeAccountId }: { activeAccountId: string }) {
       setGreetingValue(savedGreeting);
     } else {
       setGreetingValue(
-        activeTab === "free_chat"
-          ? "你好，我是自由对话助手。你可以直接和我聊任何想法、问题或任务。"
-          : "你好！我是账号定位专家。我们从你的技能和兴趣开始聊起吧？"
+        "你好！我是账号定位专家。我们从你的技能和兴趣开始聊起吧？"
       );
     }
     
@@ -1105,7 +1099,7 @@ function ConfigView({ activeAccountId }: { activeAccountId: string }) {
     writeScopedConfig(activeAccountId, activeTab, "model", selectedModel);
     writeScopedConfig(activeAccountId, activeTab, "prompt", promptValue);
     removeScopedConfig(activeAccountId, activeTab, "constraint");
-    if (activeTab === "positioning" || activeTab === "free_chat") {
+    if (activeTab === "positioning") {
       writeScopedConfig(activeAccountId, activeTab, "greeting", greetingValue);
     }
     alert('保存成功！');
@@ -1324,7 +1318,7 @@ function ConfigView({ activeAccountId }: { activeAccountId: string }) {
             </p>
           </div>
 
-          {(activeTab === "positioning" || activeTab === "free_chat") && (
+          {activeTab === "positioning" && (
             <div className="form-row">
               <label>开场白配置 (AI第一条发给用户的消息)</label>
               <input 
@@ -1813,303 +1807,6 @@ function PositioningView({ activeAccountId }: { activeAccountId: string }) {
           </div>
         )}
       </AnimatePresence>
-    </div>
-  );
-}
-
-function FreeChatView({ activeAccountId }: { activeAccountId: string }) {
-  const [messages, setMessages] = useState<any[]>([]);
-  const [inputValue, setInputValue] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [latestCitations, setLatestCitations] = useState<any[]>([]);
-  const [mountedFile, setMountedFile] = useState<any>(null);
-  const chatEndRef = React.useRef<HTMLDivElement>(null);
-
-  const scrollToBottom = () => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
-
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages, loading]);
-
-  useEffect(() => {
-    if (activeAccountId) {
-      fetchChat();
-      fetchMountedFile();
-    }
-  }, [activeAccountId]);
-
-  const fetchChat = async () => {
-    try {
-      const res = await fetch(`/api/v1/projects/${activeAccountId}/free-chat`, {
-        headers: { "X-API-Key": "demo-key" }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setMessages(data.data?.items || []);
-        setLatestCitations([]);
-      }
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  const fetchMountedFile = async () => {
-    try {
-      const res = await fetch(`/api/v1/projects/${activeAccountId}/context-file?module_key=free_chat`, {
-        headers: { "X-API-Key": "demo-key" }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setMountedFile(data.data || null);
-      } else {
-        setMountedFile(null);
-      }
-    } catch (e) {
-      console.error(e);
-      setMountedFile(null);
-    }
-  };
-
-  const handleDeleteMessage = async (messageId: string) => {
-    if (!confirm("确定要删除这条消息吗？")) return;
-    try {
-      const res = await fetch(`/api/v1/projects/${activeAccountId}/free-chat/${messageId}`, {
-        method: 'DELETE',
-        headers: { "X-API-Key": "demo-key" }
-      });
-      if (res.ok) {
-        setMessages(prev => prev.filter(m => m.id !== messageId));
-      }
-    } catch (e) {
-      console.error(e);
-      alert("删除失败");
-    }
-  };
-
-  const sendMessage = async () => {
-    const msg = inputValue.trim();
-    if (!msg || loading) return;
-
-    setInputValue("");
-    const textarea = document.querySelector('.input-field[placeholder*="自由对话"]') as HTMLTextAreaElement;
-    if (textarea) textarea.style.height = 'auto';
-
-    setLoading(true);
-    setLatestCitations([]);
-    const tempId = `temp_${Date.now()}`;
-    setMessages(prev => [...prev, { id: tempId, role: "user", content: msg }]);
-
-    try {
-      const savedModel = readScopedConfig(activeAccountId, 'free_chat', 'model') || "gpt-5.5";
-      const savedPrompt = readScopedConfig(activeAccountId, 'free_chat', 'prompt') || "你是一个专业、友好、简洁的自由对话助手。请用中文与用户进行自然的多轮交流，优先给出清晰、可执行的回答。";
-      const systemInstruction = savedPrompt;
-
-      const res = await fetch(`/api/v1/projects/${activeAccountId}/free-chat`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-API-Key": "demo-key"
-        },
-        body: JSON.stringify({ message: msg, systemInstruction, model: savedModel })
-      });
-
-      if (!res.ok) throw new Error("网络请求失败");
-
-      const reader = res.body?.getReader();
-      if (!reader) throw new Error("无法读取流");
-      const decoder = new TextDecoder("utf-8");
-
-      let fullReply = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split("\n");
-
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const dataStr = line.slice(6).trim();
-          if (!dataStr) continue;
-
-          try {
-            const data = JSON.parse(dataStr);
-            if (data.type === "userMsg") {
-              setMessages(prev => prev.map(m => m.id === tempId ? data.message : m));
-              setMessages(prev => [...prev, { id: "temp_ai", role: "model", content: "" }]);
-            } else if (data.type === "chunk") {
-              fullReply = (data.fullText || "").replace(/<think>[\s\S]*?(?:<\/think>)?/gi, '');
-              setMessages(prev => prev.map(m => m.id === "temp_ai" ? { ...m, content: fullReply } : m));
-            } else if (data.type === "done") {
-              setMessages(prev => prev.map(m => m.id === "temp_ai" ? data.message : m));
-              setLatestCitations(data.citations || []);
-              setLoading(false);
-              return;
-            } else if (data.type === "error") {
-              throw new Error(data.message);
-            }
-          } catch (e) {
-            // ignore partial JSON parse error
-          }
-        }
-      }
-    } catch (e: any) {
-      console.error(e);
-      setMessages(prev => {
-        const filtered = prev.filter(m => m.id !== tempId);
-        return [...filtered, { role: "user", content: msg }, { id: `err_${Date.now()}`, role: "model", content: `⚠️ 抱歉，发生错误：\n${e.message}` }];
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
-  };
-
-  const adjustTextareaHeight = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setInputValue(e.target.value);
-    e.target.style.height = 'auto';
-    e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
-  };
-
-  const greeting = readScopedConfig(activeAccountId, 'free_chat', 'greeting') || "你好，我是自由对话助手。你可以直接和我聊任何想法、问题或任务。";
-
-  return (
-    <div style={{ display: 'flex', gap: 24, height: 'calc(100vh - 140px)' }}>
-      <div className="card" style={{ flex: 1, display: 'flex', flexDirection: 'column', marginBottom: 0 }}>
-        <div style={{ paddingBottom: 16, borderBottom: '1px solid var(--border-light)', marginBottom: 16 }}>
-          <h2 style={{ fontSize: '1.2rem', fontWeight: 800 }}>自由对话</h2>
-          <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>支持多轮连续交流，适合临时咨询、头脑风暴、任务拆解与日常问答。</p>
-          {mountedFile && (
-            <div style={{ marginTop: 12, display: 'inline-flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 999, background: 'rgba(37,99,235,0.08)', border: '1px solid rgba(37,99,235,0.14)', fontSize: '0.82rem', color: 'var(--text-main)' }}>
-              <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--success)' }} />
-              当前已挂载：{decodeDisplayFilename(mountedFile.filename)} · {Math.ceil((mountedFile.size_bytes || 0) / 1024)} KB
-            </div>
-          )}
-        </div>
-
-        <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 16, paddingRight: 8 }}>
-          {messages.length === 0 && (
-            <div className="empty-state" style={{ flex: 1, border: 'none' }}>
-              <p>{greeting}</p>
-            </div>
-          )}
-          {messages.map((m, i) => (
-            <div key={m.id || i} style={{ alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '85%' }}>
-              <div style={{
-                background: m.role === 'user' ? 'var(--primary)' : 'var(--bg-hover)',
-                color: m.role === 'user' ? 'white' : 'var(--text-main)',
-                padding: '12px 16px',
-                borderRadius: 'var(--radius-md)',
-                borderBottomRightRadius: m.role === 'user' ? 0 : 'var(--radius-md)',
-                borderBottomLeftRadius: m.role === 'user' ? 'var(--radius-md)' : 0,
-                lineHeight: 1.5,
-                fontSize: '0.95rem',
-                whiteSpace: 'pre-wrap'
-              }}>
-                {m.role === 'model' ? <RichMessageContent content={m.content} /> : <RichMessageContent content={m.content} isUser />}
-              </div>
-
-              <div style={{
-                display: 'flex',
-                justifyContent: m.role === 'user' ? 'flex-end' : 'space-between',
-                alignItems: 'center',
-                marginTop: 6,
-                fontSize: '0.75rem',
-                color: 'var(--text-muted)'
-              }}>
-                {m.role === 'model' && (
-                  <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-                    {m.latency_ms && <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ fontSize: '10px' }}>⏱️</span> {(m.latency_ms / 1000).toFixed(1)}s</span>}
-                    {m.total_tokens && <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ fontSize: '10px' }}>🪙</span> {m.total_tokens} tokens</span>}
-                  </div>
-                )}
-                {m.id && !m.id.startsWith('temp_') && !m.id.startsWith('err_') && (
-                  <button
-                    onClick={() => handleDeleteMessage(m.id)}
-                    style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 4, opacity: 0.6 }}
-                    onMouseOver={e => e.currentTarget.style.opacity = '1'}
-                    onMouseOut={e => e.currentTarget.style.opacity = '0.6'}
-                    title="删除"
-                  >
-                    <Trash2 size={12} /> 删除
-                  </button>
-                )}
-              </div>
-              {m.role === 'model' && i === messages.length - 1 && latestCitations.length > 0 && (
-                <div style={{ marginTop: 8, padding: '10px 12px', background: 'var(--bg-app)', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-sm)' }}>
-                  <div style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: 6 }}>
-                    {latestCitations.some((citation) => citation.full_document) ? '已挂载全文文件' : '已参考知识库'}
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    {latestCitations.map((citation, idx) => (
-                      <div key={`${citation.chunk_id || idx}`} style={{ fontSize: '0.8rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
-                        {idx + 1}. {decodeDisplayFilename(citation.source?.filename || '未知文件')}
-                        {citation.full_document ? ' · 已完整挂载' : ''}
-                        {!citation.full_document && citation.source?.locator?.para ? ` · 第${citation.source.locator.para}段` : ''}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          ))}
-          {loading && (
-            <div style={{ alignSelf: 'flex-start', background: 'var(--bg-hover)', padding: '12px 16px', borderRadius: 'var(--radius-md)', fontSize: '0.9rem', color: 'var(--text-muted)' }}>
-              正在思考...
-            </div>
-          )}
-          <div ref={chatEndRef} />
-        </div>
-
-        <div style={{ display: 'flex', gap: 12, marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border-light)', alignItems: 'flex-end' }}>
-          <textarea
-            className="input-field"
-            style={{
-              resize: 'none',
-              minHeight: '44px',
-              maxHeight: '120px',
-              overflowY: 'auto',
-              lineHeight: '1.5',
-              paddingTop: '10px',
-              paddingBottom: '10px',
-              borderRadius: 'var(--radius-md)'
-            }}
-            rows={1}
-            placeholder="输入自由对话内容... (Shift+Enter 换行)"
-            value={inputValue}
-            onChange={adjustTextareaHeight}
-            onKeyDown={handleKeyDown}
-            disabled={loading}
-          />
-          <button
-            className="btn-primary"
-            style={{
-              width: '44px',
-              height: '44px',
-              padding: 0,
-              flexShrink: 0,
-              borderRadius: 'var(--radius-md)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center'
-            }}
-            onClick={() => sendMessage()}
-            disabled={loading || !inputValue.trim()}
-            title="发送 (Enter)"
-          >
-            <Send size={18} />
-          </button>
-        </div>
-      </div>
     </div>
   );
 }

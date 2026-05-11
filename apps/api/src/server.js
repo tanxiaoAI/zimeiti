@@ -118,7 +118,7 @@ function buildSystemEnvChecklist() {
       required: true,
       secret: true,
       configure_in: "zeabur",
-      used_by: ["自由对话", "账号定位", "选题库 AI 分析", "视频拆解 AI", "生成封面"],
+      used_by: ["账号定位", "选题库 AI 分析", "视频拆解 AI", "生成封面"],
       note: "当前大部分 GPT/Claude/GPTS Gemini 模型都依赖它。"
     },
     {
@@ -1344,31 +1344,6 @@ app.delete("/api/v1/projects/:projectId/positioning/chat/:messageId", authApiKey
   if (!project) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在" }, request_id));
 
   const success = deleteChatMessage(messageId, projectId, "positioning");
-  if (!success) {
-    return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "消息不存在或已删除" }, request_id));
-  }
-
-  res.json(ok({ deleted: true }, request_id));
-});
-
-app.get("/api/v1/projects/:projectId/free-chat", authApiKey, (req, res) => {
-  const request_id = req.context?.requestId;
-  const project = getProject(req.params.projectId);
-  if (!project) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在" }, request_id));
-  res.json(ok({ items: listChatMessages(project.id, "free_chat") }, request_id));
-});
-
-app.post("/api/v1/projects/:projectId/free-chat", authApiKey, async (req, res) => {
-  return handleProjectChat(req, res, "free_chat", { profileMode: false, fullContextModule: "free_chat" });
-});
-
-app.delete("/api/v1/projects/:projectId/free-chat/:messageId", authApiKey, (req, res) => {
-  const request_id = req.context?.requestId;
-  const { projectId, messageId } = req.params;
-  const project = getProject(projectId);
-  if (!project) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在" }, request_id));
-
-  const success = deleteChatMessage(messageId, projectId, "free_chat");
   if (!success) {
     return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "消息不存在或已删除" }, request_id));
   }

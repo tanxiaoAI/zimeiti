@@ -284,6 +284,7 @@ function ExpandableTextCell({
 
 export function TopicLibraryView({ activeAccountId, onEnterProduction, productionTopicIds = [] }: { activeAccountId: string; onEnterProduction?: (topic: any) => void; productionTopicIds?: string[] }) {
   const [topics, setTopics] = useState<any[]>([]);
+  const [addingRecord, setAddingRecord] = useState(false);
   const [options, setOptions] = useState<{ judgment_result: any[], source: any[] }>({ judgment_result: [], source: [] });
   const [optionModal, setOptionModal] = useState<string | null>(null);
   const [copyDrawer, setCopyDrawer] = useState<any | null>(null);
@@ -378,11 +379,19 @@ export function TopicLibraryView({ activeAccountId, onEnterProduction, productio
   };
 
   const handleAddRecord = async () => {
+    if (!activeAccountId || addingRecord) return;
+    setAddingRecord(true);
     try {
-      await apiPost(`/api/v1/projects/${activeAccountId}/topic-library`, { name: "新建选题" }, "demo-key");
-      fetchTopics();
+      const created: any = await apiPost(`/api/v1/projects/${activeAccountId}/topic-library`, { name: "新建选题" }, "demo-key");
+      if (created?.id) {
+        setTopics(prev => [created, ...prev]);
+      } else {
+        await fetchTopics();
+      }
     } catch (e) {
       console.error(e);
+    } finally {
+      setAddingRecord(false);
     }
   };
 
@@ -626,8 +635,21 @@ export function TopicLibraryView({ activeAccountId, onEnterProduction, productio
           </div>
           <p className="text-muted-foreground text-xs">以多维表格形式管理选题，支持参考文案提取与多模型 AI 分析。</p>
         </div>
-        <Button size="sm" className="topic-library-add-btn topic-primary-btn" onClick={handleAddRecord}>
-          <Plus size={14} className="mr-1.5" /> 新增选题
+        <Button
+          size="sm"
+          className="topic-library-add-btn topic-primary-btn"
+          onClick={handleAddRecord}
+          disabled={addingRecord}
+        >
+          {addingRecord ? (
+            <>
+              <Loader2 size={14} className="mr-1.5 animate-spin" /> 新增中...
+            </>
+          ) : (
+            <>
+              <Plus size={14} className="mr-1.5" /> 新增选题
+            </>
+          )}
         </Button>
       </div>
 
