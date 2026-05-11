@@ -36,6 +36,7 @@ export function deleteProject(project_id, user_id) {
     db.prepare("DELETE FROM context_files WHERE project_id = ?").run(project_id);
     db.prepare("DELETE FROM topic_library WHERE project_id = ?").run(project_id);
     db.prepare("DELETE FROM topic_options WHERE project_id = ?").run(project_id);
+    db.prepare("DELETE FROM topic_extract_jobs WHERE project_id = ?").run(project_id);
     db.prepare("DELETE FROM projects WHERE id = ? AND user_id = ?").run(project_id, user_id);
   });
 
@@ -352,6 +353,64 @@ export function listGenerationLogs({ user_id, project_id, feature, limit = 50 })
     request_json: row.request_json ? JSON.parse(row.request_json) : null,
     response_json: row.response_json ? JSON.parse(row.response_json) : null
   }));
+}
+
+function parseTopicExtractJob(row) {
+  if (!row) return null;
+  return {
+    ...row,
+    result_json: row.result_json ? JSON.parse(row.result_json) : null,
+    debug_json: row.debug_json ? JSON.parse(row.debug_json) : null
+  };
+}
+
+export function createTopicExtractJob(project_id, data) {
+  const id = `tex_${nanoid(10)}`;
+  db.prepare(`
+    INSERT INTO topic_extract_jobs (
+      id, project_id, topic_id, link, platform, status, stage, progress_text
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    project_id,
+    data.topic_id || null,
+    data.link,
+    data.platform || null,
+    data.status || "pending",
+    data.stage || "queued",
+    data.progress_text || "任务已创建，等待开始"
+  );
+  return getTopicExtractJob(id);
+}
+
+export function getTopicExtractJob(id) {
+  const row = db.prepare("SELECT * FROM topic_extract_jobs WHERE id = ?").get(id);
+  return parseTopicExtractJob(row);
+}
+
+export function updateTopicExtractJob(id, data) {
+  const fields = Object.keys(data).filter((key) => key !== "id" && data[key] !== undefined);
+  if (fields.length === 0) return getTopicExtractJob(id);
+
+  const setClause = fields.map((field) => {
+    if (field === "result_json" || field === "debug_json") return `${field} = ?`;
+    return `${field} = ?`;
+  }).join(", ");
+  const values = fields.map((field) => {
+    if (field === "result_json" || field === "debug_json") {
+      return data[field] == null ? null : JSON.stringify(data[field]);
+    }
+    return data[field];
+  });
+  values.push(id);
+
+  db.prepare(`
+    UPDATE topic_extract_jobs
+    SET ${setClause}, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(...values);
+
+  return getTopicExtractJob(id);
 }
 
 

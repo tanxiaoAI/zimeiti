@@ -61,7 +61,10 @@ import {
   getTopicLibraryItem,
   updateTopicLibraryItem,
   deleteTopicLibraryItem,
-  reorderTopicLibraryItems
+  reorderTopicLibraryItems,
+  createTopicExtractJob,
+  getTopicExtractJob,
+  updateTopicExtractJob
 } from "./services/appStore.js";
 import { addVideoTeardown, listVideoTeardowns, getVideoTeardown, updateVideoTeardown, deleteVideoTeardown } from "./services/appStore.js";
 
@@ -933,6 +936,26 @@ function formatExtractDebugSummary(debug) {
   ].join("；");
 }
 
+function snapshotRequestMeta(req) {
+  return {
+    protocol: req.protocol,
+    host: req.get("host") || "",
+    forwardedProto: req.get("x-forwarded-proto") || ""
+  };
+}
+
+function buildRequestFromSnapshot(snapshot) {
+  return {
+    protocol: snapshot?.protocol || "http",
+    get(headerName) {
+      const normalized = String(headerName || "").toLowerCase();
+      if (normalized === "host") return snapshot?.host || "";
+      if (normalized === "x-forwarded-proto") return snapshot?.forwardedProto || "";
+      return "";
+    }
+  };
+}
+
 function resolveVolcPollingConfig(durationMs) {
   const pollIntervalMs = Number(process.env.VOLC_ASR_POLL_INTERVAL_MS || 3000);
   const configuredMaxPolls = Number(process.env.VOLC_ASR_MAX_POLLS || 10);
@@ -1063,6 +1086,239 @@ async function transcribeMediaWithFallback(mediaUrls, options = {}) {
     attempts
   };
   throw error;
+}
+
+async function executeTopicLibraryExtract(link, platform, requestMeta, onProgress) {
+  const requestLike = buildRequestFromSnapshot(requestMeta);
+  const notifyProgress = async ({ stage, progressText, debugJson }) => {
+    if (typeof onProgress !== "function") return;
+    await Promise.resolve(onProgress({ stage, progressText, debugJson }));
+  };
+
+  const extractDebug = {
+    parser: { ok: false, stage: "getone", error: "未开始" },
+    mirror: { ok: false, stage: "mirror", error: "未开始" },
+    asr: { ok: false, stage: "volc_asr", error: "未开始" }
+  };
+
+  await notifyProgress({ stage: "parsing", progressText: "正在解析视频链接..." });
+
+  const parsed = await resolveVideoUrlByPlatform(link, platform);
+  const resolvedMediaUrls = dedupeUrls([...(parsed.candidateVideoUrls || []), parsed.videoUrl]);
+  extractDebug.parser = {
+    ...(parsed.parserDebug || {}),
+    ok: true,
+    parser: parsed.parser,
+    videoSource: parsed.videoSource || null,
+    resolvedVideoUrl: parsed.videoUrl,
+    candidateVideoUrls: resolvedMediaUrls,
+    durationMs: parsed.durationMs || null
+  };
+
+  await notifyProgress({
+    stage: "mirroring",
+    progressText: platform === "抖音" ? "正在下载视频并生成音频..." : "正在下载视频内容...",
+    debugJson: extractDebug
+  });
+
+  let mirroredMediaUrl = null;
+  let mirroredAudioUrl = null;
+  let mirroredLocalPath = null;
+  const mirrorAttempts = [];
+  if (platform === "抖音") {
+    try {
+      const ytDlpResult = await downloadMediaByYtDlp(link, requestLike, "topic_extract");
+      mirroredMediaUrl = ytDlpResult.publicUrl;
+      mirroredLocalPath = ytDlpResult.localPath;
+      mirrorAttempts.push({
+        ok: true,
+        method: ytDlpResult.method,
+        sourceUrl: link,
+        mirroredMediaUrl,
+        localPath: ytDlpResult.localPath,
+        filename: ytDlpResult.filename
+      });
+    } catch (ytDlpError) {
+      console.warn("topic-library extract yt-dlp failed:", ytDlpError.message);
+      mirrorAttempts.push({
+        ok: false,
+        method: "yt-dlp",
+        sourceUrl: link,
+        error: /Fresh cookies/i.test(ytDlpError.message)
+          ? "yt-dlp 需要 fresh cookies，当前服务端未提供可用 cookies"
+          : ytDlpError.message
+      });
+    }
+  }
+  if (!mirroredMediaUrl) {
+    try {
+      const mirrorResult = await mirrorRemoteMediaCandidatesToPublicUrl(resolvedMediaUrls, requestLike, "topic_extract");
+      mirroredMediaUrl = mirrorResult.publicUrl;
+      mirroredLocalPath = mirrorResult.localPath;
+      mirrorAttempts.push(...(mirrorResult.attempts || []));
+    } catch (mirrorError) {
+      console.warn("topic-library extract mirror failed:", mirrorError.message);
+      if (Array.isArray(mirrorError.attempts) && mirrorError.attempts.length > 0) {
+        mirrorAttempts.push(...mirrorError.attempts);
+      } else {
+        mirrorAttempts.push({
+          ok: false,
+          method: "fetch",
+          sourceUrl: parsed.videoUrl,
+          error: mirrorError.message
+        });
+      }
+    }
+  }
+  let audioExtract = null;
+  if (mirroredLocalPath) {
+    try {
+      const audioResult = await extractAudioTrackToPublicUrl(mirroredLocalPath, requestLike, "topic_extract_audio");
+      mirroredAudioUrl = audioResult.publicUrl;
+      audioExtract = {
+        ok: true,
+        method: audioResult.method,
+        mirroredAudioUrl,
+        localPath: audioResult.localPath,
+        filename: audioResult.filename
+      };
+    } catch (audioError) {
+      console.warn("topic-library extract audio convert failed:", audioError.message);
+      audioExtract = {
+        ok: false,
+        method: "ffmpeg-mp3",
+        error: audioError.message
+      };
+    }
+  }
+  const successfulMirrorAttempt = mirrorAttempts.find((item) => item.ok) || null;
+  extractDebug.mirror = successfulMirrorAttempt
+    ? {
+        ok: true,
+        stage: "mirror",
+        method: successfulMirrorAttempt.method,
+        remoteUrl: successfulMirrorAttempt.sourceUrl,
+        mirroredMediaUrl: successfulMirrorAttempt.mirroredMediaUrl,
+        localPath: successfulMirrorAttempt.localPath,
+        filename: successfulMirrorAttempt.filename,
+        contentType: successfulMirrorAttempt.contentType || "",
+        mirroredAudioUrl,
+        audioExtract,
+        attempts: mirrorAttempts
+      }
+    : {
+        ok: false,
+        stage: "mirror",
+        remoteUrl: parsed.videoUrl,
+        error: mirrorAttempts[mirrorAttempts.length - 1]?.error || "媒体文件下载失败",
+        mirroredAudioUrl,
+        audioExtract,
+        attempts: mirrorAttempts
+      };
+
+  await notifyProgress({
+    stage: "transcribing",
+    progressText: "正在调用语音识别，请稍候...",
+    debugJson: extractDebug
+  });
+
+  let transcript = "";
+  let fallbackContent = "";
+  let extractFallback = null;
+  try {
+    const transcribeResult = await transcribeMediaWithFallback([
+      mirroredAudioUrl,
+      mirroredMediaUrl,
+      ...resolvedMediaUrls
+    ], {
+      durationMs: parsed.durationMs
+    });
+    transcript = transcribeResult.text;
+    extractDebug.asr = transcribeResult.debug;
+  } catch (transcribeError) {
+    extractDebug.asr = {
+      ...(transcribeError.stepDebug || {}),
+      ok: false,
+      error: transcribeError.message
+    };
+    fallbackContent = buildTopicExtractFallbackContent(parsed);
+    if (!fallbackContent) {
+      transcribeError.extractDebug = extractDebug;
+      throw transcribeError;
+    }
+    extractFallback = {
+      source: "title_desc_fallback",
+      reason: transcribeError.message
+    };
+  }
+
+  return {
+    content: transcript,
+    content_source: transcript ? "transcript" : null,
+    fallback_content: fallbackContent || null,
+    platform,
+    source_link: link,
+    resolved_video_url: parsed.videoUrl,
+    resolved_video_candidates: resolvedMediaUrls,
+    mirrored_media_url: mirroredMediaUrl,
+    mirrored_audio_url: mirroredAudioUrl,
+    extract_fallback: extractFallback,
+    extract_debug: extractDebug,
+    parser: parsed.parser,
+    note_title: parsed.noteTitle,
+    note_desc: parsed.noteDesc
+  };
+}
+
+async function runTopicLibraryExtractJob(jobId, requestMeta) {
+  const startedAt = new Date().toISOString();
+  const existingJob = getTopicExtractJob(jobId);
+  if (!existingJob) return;
+
+  updateTopicExtractJob(jobId, {
+    status: "running",
+    stage: "parsing",
+    progress_text: "正在解析视频链接...",
+    error_message: null,
+    started_at: startedAt,
+    finished_at: null
+  });
+
+  try {
+    const result = await executeTopicLibraryExtract(
+      existingJob.link,
+      existingJob.platform,
+      requestMeta,
+      ({ stage, progressText, debugJson }) => updateTopicExtractJob(jobId, {
+        status: "running",
+        stage,
+        progress_text: progressText,
+        debug_json: debugJson ?? undefined
+      })
+    );
+
+    updateTopicExtractJob(jobId, {
+      status: "succeeded",
+      stage: "completed",
+      progress_text: "提取完成",
+      result_json: result,
+      debug_json: result.extract_debug || null,
+      error_message: null,
+      finished_at: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error("topic-library extract job failed:", error);
+    const extractDebug = error.extractDebug || error.stepDebug || null;
+    const errorMessage = `提取失败：${error.message}${extractDebug ? `；${formatExtractDebugSummary(extractDebug)}` : ""}`;
+    updateTopicExtractJob(jobId, {
+      status: "failed",
+      stage: "failed",
+      progress_text: "提取失败",
+      error_message: errorMessage,
+      debug_json: extractDebug,
+      finished_at: new Date().toISOString()
+    });
+  }
 }
 
 async function handleProjectChat(req, res, chatType, options = {}) {
@@ -1721,181 +1977,53 @@ app.post("/api/v1/projects/:projectId/topic-library/reorder", authApiKey, (req, 
 
 app.post("/api/v1/projects/:projectId/topic-library/extract", authApiKey, async (req, res) => {
   const request_id = req.context?.requestId;
-  const { link, platform } = req.body;
+  const { link, platform, topic_id } = req.body;
+  const project = getProject(req.params.projectId);
+  if (!project) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在" }, request_id));
   if (!link) return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "缺少参考链接" }, request_id));
-  
+
   if (platform !== "小红书" && platform !== "抖音") {
-    return res.json(ok({ content: "仅能解析小红书和抖音视频内容" }, request_id));
+    return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "仅支持解析小红书和抖音视频内容" }, request_id));
   }
-  
+
   try {
-    const extractDebug = {
-      parser: { ok: false, stage: "getone", error: "未开始" },
-      mirror: { ok: false, stage: "mirror", error: "未开始" },
-      asr: { ok: false, stage: "volc_asr", error: "未开始" }
-    };
-    const parsed = await resolveVideoUrlByPlatform(link, platform);
-    const resolvedMediaUrls = dedupeUrls([...(parsed.candidateVideoUrls || []), parsed.videoUrl]);
-    extractDebug.parser = {
-      ...(parsed.parserDebug || {}),
-      ok: true,
-      parser: parsed.parser,
-      videoSource: parsed.videoSource || null,
-      resolvedVideoUrl: parsed.videoUrl,
-      candidateVideoUrls: resolvedMediaUrls,
-      durationMs: parsed.durationMs || null
-    };
-
-    let mirroredMediaUrl = null;
-    let mirroredAudioUrl = null;
-    let mirroredLocalPath = null;
-    const mirrorAttempts = [];
-    if (platform === "抖音") {
-      try {
-        const ytDlpResult = await downloadMediaByYtDlp(link, req, "topic_extract");
-        mirroredMediaUrl = ytDlpResult.publicUrl;
-        mirroredLocalPath = ytDlpResult.localPath;
-        mirrorAttempts.push({
-          ok: true,
-          method: ytDlpResult.method,
-          sourceUrl: link,
-          mirroredMediaUrl,
-          localPath: ytDlpResult.localPath,
-          filename: ytDlpResult.filename
-        });
-      } catch (ytDlpError) {
-        console.warn("topic-library extract yt-dlp failed:", ytDlpError.message);
-        mirrorAttempts.push({
-          ok: false,
-          method: "yt-dlp",
-          sourceUrl: link,
-          error: /Fresh cookies/i.test(ytDlpError.message)
-            ? "yt-dlp 需要 fresh cookies，当前服务端未提供可用 cookies"
-            : ytDlpError.message
-        });
-      }
-    }
-    if (!mirroredMediaUrl) {
-      try {
-        const mirrorResult = await mirrorRemoteMediaCandidatesToPublicUrl(resolvedMediaUrls, req, "topic_extract");
-        mirroredMediaUrl = mirrorResult.publicUrl;
-        mirroredLocalPath = mirrorResult.localPath;
-        mirrorAttempts.push(...(mirrorResult.attempts || []));
-      } catch (mirrorError) {
-        console.warn("topic-library extract mirror failed:", mirrorError.message);
-        if (Array.isArray(mirrorError.attempts) && mirrorError.attempts.length > 0) {
-          mirrorAttempts.push(...mirrorError.attempts);
-        } else {
-          mirrorAttempts.push({
-            ok: false,
-            method: "fetch",
-            sourceUrl: parsed.videoUrl,
-            error: mirrorError.message
-          });
-        }
-      }
-    }
-    let audioExtract = null;
-    if (mirroredLocalPath) {
-      try {
-        const audioResult = await extractAudioTrackToPublicUrl(mirroredLocalPath, req, "topic_extract_audio");
-        mirroredAudioUrl = audioResult.publicUrl;
-        audioExtract = {
-          ok: true,
-          method: audioResult.method,
-          mirroredAudioUrl,
-          localPath: audioResult.localPath,
-          filename: audioResult.filename
-        };
-      } catch (audioError) {
-        console.warn("topic-library extract audio convert failed:", audioError.message);
-        audioExtract = {
-          ok: false,
-          method: "ffmpeg-mp3",
-          error: audioError.message
-        };
-      }
-    }
-    const successfulMirrorAttempt = mirrorAttempts.find((item) => item.ok) || null;
-    extractDebug.mirror = successfulMirrorAttempt
-      ? {
-          ok: true,
-          stage: "mirror",
-          method: successfulMirrorAttempt.method,
-          remoteUrl: successfulMirrorAttempt.sourceUrl,
-          mirroredMediaUrl: successfulMirrorAttempt.mirroredMediaUrl,
-          localPath: successfulMirrorAttempt.localPath,
-          filename: successfulMirrorAttempt.filename,
-          contentType: successfulMirrorAttempt.contentType || "",
-          mirroredAudioUrl,
-          audioExtract,
-          attempts: mirrorAttempts
-        }
-      : {
-          ok: false,
-          stage: "mirror",
-          remoteUrl: parsed.videoUrl,
-          error: mirrorAttempts[mirrorAttempts.length - 1]?.error || "媒体文件下载失败",
-          mirroredAudioUrl,
-          audioExtract,
-          attempts: mirrorAttempts
-        };
-
-    let transcript = "";
-    let fallbackContent = "";
-    let extractFallback = null;
-    try {
-      const transcribeResult = await transcribeMediaWithFallback([
-        mirroredAudioUrl,
-        mirroredMediaUrl,
-        ...resolvedMediaUrls
-      ], {
-        durationMs: parsed.durationMs
-      });
-      transcript = transcribeResult.text;
-      extractDebug.asr = transcribeResult.debug;
-    } catch (transcribeError) {
-      extractDebug.asr = {
-        ...(transcribeError.stepDebug || {}),
-        ok: false,
-        error: transcribeError.message
-      };
-      fallbackContent = buildTopicExtractFallbackContent(parsed);
-      if (!fallbackContent) {
-        transcribeError.extractDebug = extractDebug;
-        throw transcribeError;
-      }
-      extractFallback = {
-        source: "title_desc_fallback",
-        reason: transcribeError.message
-      };
-    }
+    const job = createTopicExtractJob(project.id, {
+      topic_id: topic_id || null,
+      link,
+      platform,
+      status: "pending",
+      stage: "queued",
+      progress_text: "任务已创建，等待开始"
+    });
+    const requestMeta = snapshotRequestMeta(req);
+    void runTopicLibraryExtractJob(job.id, requestMeta);
 
     res.json(ok({
-      content: transcript,
-      content_source: transcript ? "transcript" : null,
-      fallback_content: fallbackContent || null,
-      platform,
-      source_link: link,
-      resolved_video_url: parsed.videoUrl,
-      resolved_video_candidates: resolvedMediaUrls,
-      mirrored_media_url: mirroredMediaUrl,
-      mirrored_audio_url: mirroredAudioUrl,
-      extract_fallback: extractFallback,
-      extract_debug: extractDebug,
-      parser: parsed.parser,
-      note_title: parsed.noteTitle,
-      note_desc: parsed.noteDesc
+      job_id: job.id,
+      status: job.status,
+      stage: job.stage,
+      progress_text: job.progress_text
     }, request_id));
   } catch (e) {
     console.error(e);
-    const parserErrorMessage = `提取失败：${e.message}${e.extractDebug ? `；${formatExtractDebugSummary(e.extractDebug)}` : ""}`;
     res.status(500).json(fail({
       code: ErrorCodes.INTERNAL_ERROR,
-      message: parserErrorMessage,
-      details: e.extractDebug ? { extract_debug: e.extractDebug } : undefined
+      message: `提取任务创建失败：${e.message}`
     }, request_id));
   }
+});
+
+app.get("/api/v1/projects/:projectId/topic-library/extract/:jobId", authApiKey, (req, res) => {
+  const request_id = req.context?.requestId;
+  const project = getProject(req.params.projectId);
+  if (!project) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在" }, request_id));
+
+  const job = getTopicExtractJob(req.params.jobId);
+  if (!job || job.project_id !== project.id) {
+    return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "提取任务不存在" }, request_id));
+  }
+
+  res.json(ok(job, request_id));
 });
 
 app.post("/api/v1/projects/:projectId/topic-library/analyze", authApiKey, async (req, res) => {

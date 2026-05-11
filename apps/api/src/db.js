@@ -162,6 +162,25 @@ export function initDb() {
       FOREIGN KEY(project_id) REFERENCES projects(id)
     );
 
+    CREATE TABLE IF NOT EXISTS topic_extract_jobs (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      topic_id TEXT,
+      link TEXT NOT NULL,
+      platform TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      stage TEXT,
+      progress_text TEXT,
+      result_json TEXT,
+      error_message TEXT,
+      debug_json TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      started_at DATETIME,
+      finished_at DATETIME,
+      FOREIGN KEY(project_id) REFERENCES projects(id)
+    );
+
     -- Add new columns if they don't exist (using try-catch pattern in sqlite via altering is limited, so we do it safely if possible)
     -- In SQLite, we can just run ALTER TABLE, but it will throw if it exists. So we ignore errors or use pragma.
   `);

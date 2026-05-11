@@ -913,10 +913,47 @@ export function TopicLibraryView({ activeAccountId, onEnterProduction, productio
 function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
   const [extracting, setExtracting] = useState(false);
   const [content, setContent] = useState("");
+  const [extractStatusText, setExtractStatusText] = useState("");
 
   useEffect(() => {
-    if (topic) setContent(topic.ref_content || "");
+    if (topic) {
+      setContent(topic.ref_content || "");
+      setExtractStatusText("");
+    }
   }, [topic]);
+
+  const applyExtractResult = (data: any) => {
+    const transcriptContent = typeof data?.content === "string" ? data.content.trim() : "";
+    const debugText = buildExtractDebugText(data?.extract_debug);
+    const isTitleDescFallback = data?.extract_fallback?.source === "title_desc_fallback";
+    const fallbackContent = typeof data?.fallback_content === "string" && data.fallback_content.trim()
+      ? data.fallback_content.trim()
+      : (isTitleDescFallback ? transcriptContent : "");
+
+    if (transcriptContent && !isTitleDescFallback) {
+      setContent(transcriptContent);
+      onUpdate(topic.id, 'ref_content', transcriptContent);
+      setExtractStatusText("提取完成，已填入参考文案");
+      return;
+    }
+
+    if (fallbackContent) {
+      const useFallback = window.confirm(
+        `这次没提取到视频口播文案，当前拿到的是标题/正文简介，不会自动覆盖。\n\n${debugText ? `${debugText}\n\n` : ""}点击“确定”可暂时填入参考文案；点击“取消”保留当前内容。`
+      );
+      if (useFallback) {
+        setContent(fallbackContent);
+        onUpdate(topic.id, 'ref_content', fallbackContent);
+        setExtractStatusText("提取完成，已填入标题/简介兜底内容");
+      } else {
+        setExtractStatusText("提取完成，但未自动覆盖当前内容");
+      }
+      return;
+    }
+
+    setExtractStatusText("提取结束，但没有拿到可用文案");
+    alert(`提取失败：没有拿到可用的视频文案${debugText ? `\n\n${debugText}` : ""}`);
+  };
 
   const handleExtract = async () => {
     if (!topic?.ref_link) {
@@ -924,31 +961,51 @@ function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
       return;
     }
     setExtracting(true);
+    setExtractStatusText("正在创建提取任务...");
     try {
-      const data: any = await apiPost(`/api/v1/projects/${activeAccountId}/topic-library/extract`, { link: topic.ref_link, platform: topic.ref_platform }, "demo-key");
-      const transcriptContent = typeof data?.content === "string" ? data.content.trim() : "";
-      const debugText = buildExtractDebugText(data?.extract_debug);
-      const isTitleDescFallback = data?.extract_fallback?.source === "title_desc_fallback";
-      const fallbackContent = typeof data?.fallback_content === "string" && data.fallback_content.trim()
-        ? data.fallback_content.trim()
-        : (isTitleDescFallback ? transcriptContent : "");
-
-      if (transcriptContent && !isTitleDescFallback) {
-        setContent(transcriptContent);
-        onUpdate(topic.id, 'ref_content', transcriptContent);
-      } else if (fallbackContent) {
-        const useFallback = window.confirm(
-          `这次没提取到视频口播文案，当前拿到的是标题/正文简介，不会自动覆盖。\n\n${debugText ? `${debugText}\n\n` : ""}点击“确定”可暂时填入参考文案；点击“取消”保留当前内容。`
-        );
-        if (useFallback) {
-          setContent(fallbackContent);
-          onUpdate(topic.id, 'ref_content', fallbackContent);
-        }
-      } else {
-        alert(`提取失败：没有拿到可用的视频文案${debugText ? `\n\n${debugText}` : ""}`);
+      const created: any = await apiPost(
+        `/api/v1/projects/${activeAccountId}/topic-library/extract`,
+        { topic_id: topic.id, link: topic.ref_link, platform: topic.ref_platform },
+        "demo-key"
+      );
+      const jobId = String(created?.job_id || "").trim();
+      if (!jobId) {
+        throw new Error("提取任务创建失败，请稍后重试");
       }
+
+      let finalJob: any = null;
+      for (let i = 0; i < 180; i += 1) {
+        const job: any = await apiGet(`/api/v1/projects/${activeAccountId}/topic-library/extract/${jobId}`, "demo-key");
+        finalJob = job;
+        setExtractStatusText(job?.progress_text || "正在提取中...");
+
+        if (job?.status === "succeeded") {
+          applyExtractResult(job?.result_json || {});
+          return;
+        }
+
+        if (job?.status === "failed") {
+          const debugText = buildExtractDebugText(job?.debug_json);
+          setExtractStatusText("提取失败");
+          alert(`${job?.error_message || "提取失败"}${debugText ? `\n\n${debugText}` : ""}`);
+          return;
+        }
+
+        await new Promise((resolve) => window.setTimeout(resolve, 1500));
+      }
+
+      throw new Error(
+        finalJob?.progress_text
+          ? `${finalJob.progress_text}，请求等待超时，请稍后重试或重新打开查看结果`
+          : "提取任务等待超时，请稍后重试"
+      );
     } catch (e: any) {
-      alert("提取异常: " + e.message);
+      const rawMessage = String(e?.message || "未知错误");
+      const friendlyMessage = /Failed to fetch|NetworkError|Load failed|fetch/i.test(rawMessage)
+        ? "网络连接中断，任务可能仍在后台执行。请稍后重试，或刷新后重新打开提取抽屉查看。"
+        : rawMessage;
+      setExtractStatusText("提取异常，请稍后重试");
+      alert("提取异常: " + friendlyMessage);
     } finally {
       setExtracting(false);
     }
@@ -979,6 +1036,9 @@ function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
               {extracting ? "提取中..." : "提取"}
             </Button>
           </div>
+          {extractStatusText ? (
+            <div className="text-xs text-muted-foreground mt-2">{extractStatusText}</div>
+          ) : null}
           
           <textarea 
             className="input-field topic-copy-textarea resize-none p-4 text-sm leading-relaxed" 
