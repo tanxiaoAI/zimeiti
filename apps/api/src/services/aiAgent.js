@@ -139,7 +139,7 @@ function resolveContentProductionRequestOptions(targetModel) {
   if (normalizedModel === "claude-sonnet-4-6-thinking") {
     return {
       // Sonnet via GPTS messages is more stable with smaller content-production outputs.
-      maxTokens: Number(process.env.CONTENT_PRODUCTION_SONNET_MAX_TOKENS || 2048),
+      maxTokens: Number(process.env.CONTENT_PRODUCTION_SONNET_MAX_TOKENS || 3072),
       timeoutMs: Number(process.env.CONTENT_PRODUCTION_SONNET_TIMEOUT_MS || 150000)
     };
   }
