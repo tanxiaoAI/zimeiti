@@ -958,11 +958,11 @@ function buildRequestFromSnapshot(snapshot) {
 
 function resolveVolcPollingConfig(durationMs) {
   const pollIntervalMs = Number(process.env.VOLC_ASR_POLL_INTERVAL_MS || 3000);
-  const configuredMaxPolls = Number(process.env.VOLC_ASR_MAX_POLLS || 10);
-  const configuredMaxWaitMs = Number(process.env.VOLC_ASR_MAX_WAIT_MS || 0);
+  const configuredMaxPolls = Number(process.env.VOLC_ASR_MAX_POLLS || 20);
+  const configuredMaxWaitMs = Number(process.env.VOLC_ASR_MAX_WAIT_MS || 900000);
   const safeDurationMs = Number(durationMs || 0);
   const durationBasedWaitMs = safeDurationMs > 0
-    ? Math.min(Math.max(Math.ceil(safeDurationMs * 1.5), 60000), 300000)
+    ? Math.min(Math.max(Math.ceil(safeDurationMs * 1.8), 90000), 900000)
     : configuredMaxPolls * pollIntervalMs;
   const maxWaitMs = Math.max(configuredMaxWaitMs, configuredMaxPolls * pollIntervalMs, durationBasedWaitMs);
   const maxPolls = Math.max(configuredMaxPolls, Math.ceil(maxWaitMs / pollIntervalMs));
