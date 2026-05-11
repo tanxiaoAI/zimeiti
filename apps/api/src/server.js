@@ -154,41 +154,32 @@ function buildSystemEnvChecklist() {
       note: "通常无需改动。"
     },
     {
-      key: "VOLC_APP_ID",
-      label: "火山 ASR App ID",
-      required: !isEnvConfigured("VOLC_ASR_API_KEY"),
+      key: "BAILIAN_API_KEY",
+      label: "百炼 API Key",
+      required: !isEnvConfigured("DASHSCOPE_API_KEY"),
       secret: true,
       configure_in: "zeabur",
-      used_by: ["火山语音识别 submit/query"],
-      note: "推荐与 VOLC_ACCESS_TOKEN 成对配置。"
+      used_by: ["百炼 Qwen ASR 文件转写"],
+      note: "用于调用 qwen3-asr-flash-filetrans。"
     },
     {
-      key: "VOLC_ACCESS_TOKEN",
-      label: "火山 ASR Access Token",
-      required: !isEnvConfigured("VOLC_ASR_API_KEY"),
+      key: "DASHSCOPE_API_KEY",
+      label: "DashScope API Key",
+      required: !isEnvConfigured("BAILIAN_API_KEY"),
       secret: true,
       configure_in: "zeabur",
-      used_by: ["火山语音识别 submit/query"],
-      note: "推荐与 VOLC_APP_ID 成对配置。"
+      used_by: ["百炼 Qwen ASR 文件转写"],
+      note: "与 BAILIAN_API_KEY 二选一即可。"
     },
     {
-      key: "VOLC_ASR_API_KEY",
-      label: "火山 ASR 旧版 API Key",
-      required: !isEnvConfigured("VOLC_APP_ID") || !isEnvConfigured("VOLC_ACCESS_TOKEN"),
-      secret: true,
-      configure_in: "zeabur",
-      used_by: ["火山语音识别 submit/query"],
-      note: "回退鉴权方式，有 AppID + AccessToken 时可不配。"
-    },
-    {
-      key: "VOLC_ASR_RESOURCE_ID",
-      label: "火山 ASR Resource ID",
+      key: "BAILIAN_BASE_URL",
+      label: "百炼 API Base URL",
       required: false,
       secret: false,
       configure_in: "zeabur",
-      used_by: ["火山语音识别 submit/query"],
-      default_value: "volc.seedasr.auc",
-      note: "通常保持默认即可。"
+      used_by: ["百炼 Qwen ASR 文件转写"],
+      default_value: "https://dashscope.aliyuncs.com/api/v1",
+      note: "若配置了 compatible-mode/v1，服务端会自动换算为 api/v1。"
     },
     {
       key: "PUBLIC_BASE_URL",
@@ -205,7 +196,7 @@ function buildSystemEnvChecklist() {
       required: false,
       secret: false,
       configure_in: "zeabur",
-      used_by: ["视频/音频镜像地址", "火山 ASR 拉取镜像媒体"],
+      used_by: ["视频/音频镜像地址", "百炼 ASR 拉取镜像媒体"],
       note: "推荐配置成可直接公网访问静态文件的域名。"
     },
     {
@@ -299,10 +290,9 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500
 
 const GETONE_API_BASE_URL = (process.env.GETONE_API_BASE_URL || "https://api.getoneapi.com").replace(/\/$/, "");
 const GETONE_API_KEY = process.env.GETONE_API_KEY;
-const VOLC_ASR_API_KEY = process.env.VOLC_ASR_API_KEY;
-const VOLC_APP_ID = process.env.VOLC_APP_ID;
-const VOLC_ACCESS_TOKEN = process.env.VOLC_ACCESS_TOKEN;
-const VOLC_ASR_RESOURCE_ID = process.env.VOLC_ASR_RESOURCE_ID || "volc.seedasr.auc";
+const BAILIAN_API_KEY = process.env.BAILIAN_API_KEY || process.env.DASHSCOPE_API_KEY;
+const BAILIAN_BASE_URL = process.env.BAILIAN_BASE_URL || process.env.DASHSCOPE_BASE_URL || "https://dashscope.aliyuncs.com/api/v1";
+const BAILIAN_ASR_MODEL = process.env.BAILIAN_ASR_MODEL || "qwen3-asr-flash-filetrans";
 const MEDIA_PUBLIC_BASE_URL = process.env.MEDIA_PUBLIC_BASE_URL;
 const YT_DLP_PYTHON = process.env.YT_DLP_PYTHON || "python3";
 let ytDlpReadyPromise = null;
@@ -800,7 +790,7 @@ async function splitAudioTrackToPublicUrls(localPath, req, prefix = "topic_audio
   await ensureFfmpegAvailable();
   if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
-  const segmentSeconds = Math.max(30, Number(process.env.VOLC_ASR_SEGMENT_SECONDS || 150));
+  const segmentSeconds = Math.max(30, Number(process.env.BAILIAN_ASR_SEGMENT_SECONDS || 150));
   const segmentPrefix = `${prefix}_${Date.now()}_${randomUUID()}`;
   const outPattern = path.join(uploadsDir, `${segmentPrefix}_%03d.mp3`);
 
@@ -880,87 +870,158 @@ async function downloadMediaByYtDlp(sourceUrl, req, prefix = "topic_media") {
   };
 }
 
-function getVolcAsrAuthHeaders() {
-  const appId = String(VOLC_APP_ID || "").trim();
-  const accessToken = String(VOLC_ACCESS_TOKEN || "").trim();
-  if (appId && accessToken) {
-    return {
-      "X-Api-App-Id": appId,
-      "X-Api-Access-Key": accessToken
-    };
+function getBailianApiBaseUrl() {
+  const baseUrl = String(BAILIAN_BASE_URL || "").trim().replace(/\/$/, "");
+  if (!baseUrl) return "https://dashscope.aliyuncs.com/api/v1";
+  if (/\/compatible-mode\/v1$/i.test(baseUrl)) {
+    return baseUrl.replace(/\/compatible-mode\/v1$/i, "/api/v1");
   }
+  return baseUrl;
+}
 
-  const volcAsrApiKey = String(VOLC_ASR_API_KEY || "").trim() || getRequiredEnv("VOLC_ASR_API_KEY");
+function getBailianAuthHeaders() {
+  const apiKey = String(BAILIAN_API_KEY || "").trim() || getRequiredEnv("BAILIAN_API_KEY");
   return {
-    "X-Api-Key": volcAsrApiKey
+    Authorization: `Bearer ${apiKey}`
   };
 }
 
-async function submitVolcAsrTask(mediaUrl) {
-  const requestId = randomUUID();
-  const format = guessAsrFormatFromUrl(mediaUrl);
-  const timeoutMs = Number(process.env.VOLC_ASR_TIMEOUT_MS || 20000);
-  const response = await fetchWithTimeout("https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Api-Resource-Id": VOLC_ASR_RESOURCE_ID,
-      "X-Api-Request-Id": requestId,
-      "X-Api-Sequence": "-1",
-      ...getVolcAsrAuthHeaders()
-    },
-    body: JSON.stringify({
-      user: { uid: "ai-media-topic-library" },
-      audio: {
-        url: mediaUrl,
-        format
-      },
-      request: {
-        model_name: "bigmodel",
-        enable_itn: true,
-        enable_punc: true,
-        enable_ddc: false,
-        enable_speaker_info: false,
-        enable_channel_split: false,
-        show_utterances: false,
-        vad_segment: false,
-        sensitive_words_filter: ""
-      }
-    })
-  }, timeoutMs, "火山 ASR submit 超时");
+function extractBailianTranscriptFromPayload(payload, seen = new WeakSet()) {
+  const collected = [];
 
-  const statusCode = response.headers.get("X-Api-Status-Code");
-  const statusMessage = response.headers.get("X-Api-Message");
-  if (statusCode !== "20000000") {
-    throw new Error(`火山语音提交失败(${statusCode || "unknown"}): ${statusMessage || "unknown error"}`);
+  function visit(value) {
+    if (value == null) return;
+    if (typeof value === "string") return;
+    if (typeof value !== "object") return;
+    if (seen.has(value)) return;
+    seen.add(value);
+
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+
+    const directText = [
+      value.text,
+      value.transcript,
+      value.transcription,
+      value.transcription_text,
+      value.sentence?.text
+    ].find((item) => typeof item === "string" && item.trim());
+
+    if (directText) {
+      collected.push(String(directText).trim());
+    }
+
+    [
+      value.output,
+      value.result,
+      value.results,
+      value.sentences,
+      value.segments,
+      value.paragraphs,
+      value.utterances,
+      value.words
+    ].forEach(visit);
   }
 
-  return { requestId, statusCode, statusMessage, format };
+  visit(payload);
+  return Array.from(new Set(collected.filter(Boolean))).join("\n").trim();
 }
 
-async function queryVolcAsrTask(requestId) {
-  const timeoutMs = Number(process.env.VOLC_ASR_TIMEOUT_MS || 20000);
-  const response = await fetchWithTimeout("https://openspeech.bytedance.com/api/v3/auc/bigmodel/query", {
+async function fetchBailianResultUrl(resultUrl) {
+  if (!resultUrl) return null;
+  const response = await fetchWithTimeout(resultUrl, {
+    method: "GET"
+  }, Number(process.env.BAILIAN_ASR_RESULT_TIMEOUT_MS || 30000), "百炼 ASR 结果下载超时");
+
+  if (!response.ok) {
+    throw new Error(`百炼 ASR 结果下载失败(${response.status})`);
+  }
+
+  const contentType = response.headers.get("content-type") || "";
+  if (/json/i.test(contentType)) {
+    return response.json().catch(() => null);
+  }
+  const text = await response.text();
+  try {
+    return JSON.parse(text);
+  } catch (_error) {
+    return { text };
+  }
+}
+
+function pickBailianResultUrls(data) {
+  const output = data?.output || {};
+  const urls = [
+    output.result_url,
+    output.transcription_url,
+    output.file_url
+  ];
+
+  if (Array.isArray(output.results)) {
+    output.results.forEach((item) => {
+      urls.push(item?.result_url, item?.transcription_url, item?.file_url);
+    });
+  }
+
+  return Array.from(new Set(urls.filter(Boolean)));
+}
+
+async function submitBailianAsrTask(mediaUrl) {
+  const timeoutMs = Number(process.env.BAILIAN_ASR_TIMEOUT_MS || 30000);
+  const language = String(process.env.BAILIAN_ASR_LANGUAGE || "").trim();
+  const response = await fetchWithTimeout(`${getBailianApiBaseUrl()}/services/audio/asr/transcription`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Api-Resource-Id": VOLC_ASR_RESOURCE_ID,
-      "X-Api-Request-Id": requestId,
-      ...getVolcAsrAuthHeaders()
+      "X-DashScope-Async": "enable",
+      ...getBailianAuthHeaders()
     },
-    body: JSON.stringify({})
-  }, timeoutMs, "火山 ASR query 超时");
+    body: JSON.stringify({
+      model: BAILIAN_ASR_MODEL,
+      input: {
+        file_url: mediaUrl
+      },
+      parameters: {
+        enable_itn: true,
+        ...(language ? { language } : {})
+      }
+    })
+  }, timeoutMs, "百炼 ASR submit 超时");
 
-  const statusCode = response.headers.get("X-Api-Status-Code");
-  const statusMessage = response.headers.get("X-Api-Message");
   const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(`百炼语音提交失败(${response.status}): ${data?.message || data?.code || "unknown error"}`);
+  }
 
-  return { statusCode, statusMessage, data };
+  const taskId = data?.output?.task_id || data?.output?.taskId || data?.task_id || data?.taskId;
+  if (!taskId) {
+    throw new Error("百炼语音提交成功，但未返回 task_id");
+  }
+
+  return {
+    taskId,
+    requestId: data?.request_id || null,
+    raw: data
+  };
 }
 
-function isVolcUriError(message) {
-  const text = String(message || "");
-  return /Invalid audio URI|audio download failed/i.test(text);
+async function queryBailianAsrTask(taskId) {
+  const timeoutMs = Number(process.env.BAILIAN_ASR_TIMEOUT_MS || 30000);
+  const response = await fetchWithTimeout(`${getBailianApiBaseUrl()}/tasks/${taskId}`, {
+    method: "GET",
+    headers: {
+      ...getBailianAuthHeaders()
+    }
+  }, timeoutMs, "百炼 ASR query 超时");
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(`百炼语音查询失败(${response.status}): ${data?.message || data?.code || "unknown error"}`);
+  }
+
+  return data;
 }
 
 function buildTopicExtractFallbackContent(parsed) {
@@ -977,7 +1038,7 @@ function formatExtractDebugSummary(debug) {
   return [
     `1. GetOne解析: ${parserStatus}`,
     `2. 视频镜像到服务器: ${mirrorStatus}`,
-    `3. 火山ASR: ${asrStatus}`
+    `3. 百炼ASR: ${asrStatus}`
   ].join("；");
 }
 
@@ -1001,13 +1062,13 @@ function buildRequestFromSnapshot(snapshot) {
   };
 }
 
-function resolveVolcPollingConfig(durationMs) {
-  const pollIntervalMs = Number(process.env.VOLC_ASR_POLL_INTERVAL_MS || 3000);
-  const configuredMaxPolls = Number(process.env.VOLC_ASR_MAX_POLLS || 20);
-  const configuredMaxWaitMs = Number(process.env.VOLC_ASR_MAX_WAIT_MS || 900000);
+function resolveBailianPollingConfig(durationMs) {
+  const pollIntervalMs = Number(process.env.BAILIAN_ASR_POLL_INTERVAL_MS || 3000);
+  const configuredMaxPolls = Number(process.env.BAILIAN_ASR_MAX_POLLS || 60);
+  const configuredMaxWaitMs = Number(process.env.BAILIAN_ASR_MAX_WAIT_MS || 1200000);
   const safeDurationMs = Number(durationMs || 0);
   const durationBasedWaitMs = safeDurationMs > 0
-    ? Math.min(Math.max(Math.ceil(safeDurationMs * 1.8), 90000), 900000)
+    ? Math.min(Math.max(Math.ceil(safeDurationMs * 2), 120000), 1200000)
     : configuredMaxPolls * pollIntervalMs;
   const maxWaitMs = Math.max(configuredMaxWaitMs, configuredMaxPolls * pollIntervalMs, durationBasedWaitMs);
   const maxPolls = Math.max(configuredMaxPolls, Math.ceil(maxWaitMs / pollIntervalMs));
@@ -1020,38 +1081,51 @@ function resolveVolcPollingConfig(durationMs) {
   };
 }
 
-async function transcribeMediaByVolc(mediaUrl, options = {}) {
-  const submitInfo = await submitVolcAsrTask(mediaUrl);
-  const pollingConfig = resolveVolcPollingConfig(options.durationMs);
+async function transcribeMediaByBailian(mediaUrl, options = {}) {
+  const submitInfo = await submitBailianAsrTask(mediaUrl);
+  const pollingConfig = resolveBailianPollingConfig(options.durationMs);
   const debug = {
     ok: false,
-    stage: "volc_asr",
+    stage: "bailian_asr",
     mediaUrl,
-    format: submitInfo.format,
+    taskId: submitInfo.taskId,
     requestId: submitInfo.requestId,
-    submitStatusCode: submitInfo.statusCode,
-    submitStatusMessage: submitInfo.statusMessage,
     durationMs: pollingConfig.durationMs,
     pollIntervalMs: pollingConfig.pollIntervalMs,
     maxWaitMs: pollingConfig.maxWaitMs,
     maxPolls: pollingConfig.maxPolls,
+    submitResponse: submitInfo.raw,
     queryHistory: []
   };
 
   for (let i = 0; i < pollingConfig.maxPolls; i += 1) {
     await new Promise(resolve => setTimeout(resolve, pollingConfig.pollIntervalMs));
-    const { statusCode, statusMessage, data } = await queryVolcAsrTask(submitInfo.requestId);
+    const data = await queryBailianAsrTask(submitInfo.taskId);
+    const taskStatus = String(data?.output?.task_status || data?.output?.taskStatus || data?.task_status || data?.taskStatus || "").toUpperCase();
+    const taskMessage = data?.output?.message || data?.message || data?.output?.task_message || null;
     debug.queryHistory.push({
       index: i,
-      statusCode,
-      statusMessage,
-      resultPreview: buildPreviewText(data?.result?.text || "", 120)
+      taskStatus,
+      taskMessage,
+      resultPreview: buildPreviewText(extractBailianTranscriptFromPayload(data), 120)
     });
 
-    if (statusCode === "20000000") {
-      const text = data?.result?.text?.trim();
+    if (taskStatus === "SUCCEEDED") {
+      let text = extractBailianTranscriptFromPayload(data);
       if (!text) {
-        const error = new Error("火山语音已完成，但未返回可用文本");
+        const resultUrls = pickBailianResultUrls(data);
+        for (const resultUrl of resultUrls) {
+          const resultPayload = await fetchBailianResultUrl(resultUrl);
+          text = extractBailianTranscriptFromPayload(resultPayload);
+          if (text) {
+            debug.resultUrl = resultUrl;
+            debug.resultPayloadPreview = buildPreviewText(JSON.stringify(resultPayload).slice(0, 500), 500);
+            break;
+          }
+        }
+      }
+      if (!text) {
+        const error = new Error("百炼语音已完成，但未返回可用文本");
         error.stepDebug = debug;
         throw error;
       }
@@ -1060,32 +1134,32 @@ async function transcribeMediaByVolc(mediaUrl, options = {}) {
         debug: {
           ...debug,
           ok: true,
-          finalStatusCode: statusCode,
-          finalStatusMessage: statusMessage
+          finalStatusCode: taskStatus,
+          finalStatusMessage: taskMessage || "SUCCEEDED"
         }
       };
     }
 
-    if (statusCode === "20000001" || statusCode === "20000002") {
+    if (taskStatus === "PENDING" || taskStatus === "RUNNING" || !taskStatus) {
       continue;
     }
 
-    const error = new Error(`火山语音识别失败(${statusCode || "unknown"}): ${statusMessage || "unknown error"}`);
+    const error = new Error(`百炼语音识别失败(${taskStatus || "unknown"}): ${taskMessage || "unknown error"}`);
     error.stepDebug = {
       ...debug,
-      finalStatusCode: statusCode,
-      finalStatusMessage: statusMessage
+      finalStatusCode: taskStatus,
+      finalStatusMessage: taskMessage
     };
     throw error;
   }
 
   const lastQuery = debug.queryHistory[debug.queryHistory.length - 1] || null;
   const waitedSeconds = Math.round((debug.queryHistory.length * pollingConfig.pollIntervalMs) / 1000);
-  const error = new Error(`火山语音识别超时(已等待${waitedSeconds}秒)，最后状态=${lastQuery?.statusCode || "unknown"} ${lastQuery?.statusMessage || ""}`.trim());
+  const error = new Error(`百炼语音识别超时(已等待${waitedSeconds}秒)，最后状态=${lastQuery?.taskStatus || "unknown"} ${lastQuery?.taskMessage || ""}`.trim());
   error.stepDebug = {
     ...debug,
-    finalStatusCode: lastQuery?.statusCode || null,
-    finalStatusMessage: lastQuery?.statusMessage || null
+    finalStatusCode: lastQuery?.taskStatus || null,
+    finalStatusMessage: lastQuery?.taskMessage || null
   };
   throw error;
 }
@@ -1096,12 +1170,12 @@ async function transcribeMediaWithFallback(mediaUrls, options = {}) {
 
   for (const mediaUrl of mediaUrls.filter(Boolean)) {
     try {
-      const result = await transcribeMediaByVolc(mediaUrl, options);
+      const result = await transcribeMediaByBailian(mediaUrl, options);
       return {
         text: result.text,
         debug: {
           ok: true,
-          stage: "volc_asr",
+          stage: "bailian_asr",
           attempts: [...attempts, result.debug]
         }
       };
@@ -1109,31 +1183,29 @@ async function transcribeMediaWithFallback(mediaUrls, options = {}) {
       errors.push(`${mediaUrl} -> ${error.message}`);
       attempts.push(error.stepDebug || {
         ok: false,
-        stage: "volc_asr",
+        stage: "bailian_asr",
         mediaUrl,
         error: error.message
       });
-      if (!isVolcUriError(error.message)) {
-        error.stepDebug = {
-          ok: false,
-          stage: "volc_asr",
-          attempts
-        };
-        throw error;
-      }
+      error.stepDebug = {
+        ok: false,
+        stage: "bailian_asr",
+        attempts
+      };
+      throw error;
     }
   }
 
   const error = new Error(errors[errors.length - 1] || "未找到可用的语音识别地址");
   error.stepDebug = {
     ok: false,
-    stage: "volc_asr",
+    stage: "bailian_asr",
     attempts
   };
   throw error;
 }
 
-async function transcribeSegmentedMediaWithVolc(segments, options = {}) {
+async function transcribeSegmentedMediaWithBailian(segments, options = {}) {
   const transcripts = [];
   const segmentDebugs = [];
   const segmentDurationMs = Number(options.segmentDurationMs || 0) || null;
@@ -1164,7 +1236,7 @@ async function transcribeSegmentedMediaWithVolc(segments, options = {}) {
       });
       error.stepDebug = {
         ok: false,
-        stage: "volc_asr_segmented",
+        stage: "bailian_asr_segmented",
         segments: segmentDebugs
       };
       throw error;
@@ -1176,7 +1248,7 @@ async function transcribeSegmentedMediaWithVolc(segments, options = {}) {
     const error = new Error("分段语音识别完成，但未返回可用文本");
     error.stepDebug = {
       ok: false,
-      stage: "volc_asr_segmented",
+      stage: "bailian_asr_segmented",
       segments: segmentDebugs
     };
     throw error;
@@ -1186,7 +1258,7 @@ async function transcribeSegmentedMediaWithVolc(segments, options = {}) {
     text: mergedText,
     debug: {
       ok: true,
-      stage: "volc_asr_segmented",
+      stage: "bailian_asr_segmented",
       segment_count: segments.length,
       segments: segmentDebugs
     }
@@ -1203,7 +1275,7 @@ async function executeTopicLibraryExtract(link, platform, requestMeta, onProgres
   const extractDebug = {
     parser: { ok: false, stage: "getone", error: "未开始" },
     mirror: { ok: false, stage: "mirror", error: "未开始" },
-    asr: { ok: false, stage: "volc_asr", error: "未开始" }
+    asr: { ok: false, stage: "bailian_asr", error: "未开始" }
   };
 
   await notifyProgress({ stage: "parsing", progressText: "正在解析视频链接..." });
@@ -1281,7 +1353,7 @@ async function executeTopicLibraryExtract(link, platform, requestMeta, onProgres
     try {
       const audioResult = await extractAudioTrackToPublicUrl(mirroredLocalPath, requestLike, "topic_extract_audio");
       mirroredAudioUrl = audioResult.publicUrl;
-      const shouldSegmentAudio = Number(parsed.durationMs || 0) >= Number(process.env.VOLC_ASR_SEGMENT_THRESHOLD_MS || 180000);
+      const shouldSegmentAudio = Number(parsed.durationMs || 0) >= Number(process.env.BAILIAN_ASR_SEGMENT_THRESHOLD_MS || 0);
       if (shouldSegmentAudio) {
         audioSegments = await splitAudioTrackToPublicUrls(audioResult.localPath, requestLike, "topic_extract_audio_seg");
       }
@@ -1335,7 +1407,7 @@ async function executeTopicLibraryExtract(link, platform, requestMeta, onProgres
 
   await notifyProgress({
     stage: "transcribing",
-    progressText: "正在调用语音识别，请稍候...",
+    progressText: "正在调用百炼语音识别，请稍候...",
     debugJson: extractDebug
   });
 
@@ -1344,8 +1416,8 @@ async function executeTopicLibraryExtract(link, platform, requestMeta, onProgres
   let extractFallback = null;
   try {
     const transcribeResult = audioSegments.length > 0
-      ? await transcribeSegmentedMediaWithVolc(audioSegments, {
-          segmentDurationMs: Number(process.env.VOLC_ASR_SEGMENT_SECONDS || 150) * 1000
+      ? await transcribeSegmentedMediaWithBailian(audioSegments, {
+          segmentDurationMs: Number(process.env.BAILIAN_ASR_SEGMENT_SECONDS || 150) * 1000
         })
       : await transcribeMediaWithFallback([
           mirroredAudioUrl,
