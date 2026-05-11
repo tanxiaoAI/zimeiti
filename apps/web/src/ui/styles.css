@@ -1013,6 +1013,22 @@ textarea.input-field {
   white-space: nowrap;
 }
 
+.topic-library-text-preview.topic-library-text-preview-2line {
+  align-items: flex-start;
+}
+
+.topic-library-text-preview.topic-library-text-preview-2line span {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  line-clamp: 2;
+}
+
+.topic-library-text-preview.topic-library-text-preview-1line span {
+  white-space: nowrap;
+}
+
 .topic-library-link-icon {
   flex-shrink: 0;
 }

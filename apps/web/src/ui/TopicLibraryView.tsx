@@ -679,7 +679,7 @@ export function TopicLibraryView({ activeAccountId, onEnterProduction, productio
                       </TableCell>
                       <TableCell className="sticky-col-left">
                         <ExpandableTextCell
-                          className="topic-library-text-cell"
+                          className="topic-library-text-cell topic-library-text-preview-2line"
                           value={topic.name || ""}
                           onChange={(val: string) => handleUpdateRecord(topic.id, 'name', val)}
                           placeholder="输入选题名称..."
@@ -695,7 +695,7 @@ export function TopicLibraryView({ activeAccountId, onEnterProduction, productio
                       </TableCell>
                       <TableCell>
                         <ExpandableTextCell
-                          className="topic-library-text-cell"
+                          className="topic-library-text-cell topic-library-text-preview-2line"
                           value={topic.judgment_reason || ""}
                           onChange={(val: string) => handleUpdateRecord(topic.id, 'judgment_reason', val)}
                           placeholder="输入原因..."
@@ -714,7 +714,7 @@ export function TopicLibraryView({ activeAccountId, onEnterProduction, productio
                       </TableCell>
                       <TableCell>
                         <ExpandableTextCell
-                          className="topic-library-text-cell topic-library-link-cell"
+                          className="topic-library-text-cell topic-library-link-cell topic-library-text-preview-1line"
                           style={{ color: 'var(--primary)' }}
                           value={topic.ref_link || ""}
                           onChange={(val: string) => handleUpdateRecord(topic.id, 'ref_link', val)}
