@@ -126,8 +126,8 @@ function buildExtractDebugText(debug: any) {
     ? `2. 视频已下载到服务器(${debug?.mirror?.method || "unknown"})：${debug?.mirror?.mirroredMediaUrl || "已生成镜像地址"}`
     : `2. 视频未下载到服务器：${debug?.mirror?.error || "未知错误"}`;
   const asrLine = debug?.asr?.ok
-    ? "3. 火山ASR解析成功"
-    : `3. 火山ASR解析失败：${debug?.asr?.error || debug?.asr?.finalStatusMessage || "未知错误"}`;
+    ? "3. 语音识别解析成功"
+    : `3. 语音识别解析失败：${debug?.asr?.error || debug?.asr?.finalStatusMessage || "未知错误"}`;
   return [parserLine, mirrorLine, asrLine].join("\n");
 }
 
