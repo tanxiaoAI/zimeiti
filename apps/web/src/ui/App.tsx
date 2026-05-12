@@ -336,6 +336,13 @@ type GenerationLogItem = {
   response_json?: {
     latency_ms?: number;
     estimated_cost_usd?: number | null;
+    api_mode?: string | null;
+    actual_model?: string | null;
+    api_url?: string | null;
+    upstream_provider?: string | null;
+    upstream_status?: number | null;
+    upstream_body_preview?: string | null;
+    timeout_ms?: number | null;
     usage?: {
       prompt_tokens?: number;
       completion_tokens?: number;
@@ -2775,6 +2782,21 @@ function GenerationLogsView({ activeAccountId }: { activeAccountId: string }) {
                             {previewText}
                           </div>
                         </div>
+
+                        {item.status !== "ok" ? (
+                          <div style={{ marginTop: 12, borderRadius: 10, background: 'var(--bg-card)', padding: '12px 14px' }}>
+                            <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginBottom: 8 }}>上游诊断信息</div>
+                            <div style={{ display: 'grid', gap: 6, fontSize: '0.82rem', lineHeight: 1.65 }}>
+                              <div>路由模式：{item.response_json?.api_mode || "未记录"}</div>
+                              <div>实际模型：{item.response_json?.actual_model || "未记录"}</div>
+                              <div>上游提供方：{item.response_json?.upstream_provider || "未记录"}</div>
+                              <div>上游状态码：{typeof item.response_json?.upstream_status === "number" ? item.response_json?.upstream_status : "未记录"}</div>
+                              <div>请求地址：{item.response_json?.api_url || "未记录"}</div>
+                              <div>超时阈值：{typeof item.response_json?.timeout_ms === "number" ? `${Math.round(item.response_json.timeout_ms / 1000)}s` : "未记录"}</div>
+                              <div style={{ whiteSpace: 'pre-wrap' }}>返回摘要：{item.response_json?.upstream_body_preview || "未记录"}</div>
+                            </div>
+                          </div>
+                        ) : null}
                       </div>
                     );
                   })}

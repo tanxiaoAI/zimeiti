@@ -2418,7 +2418,7 @@ app.post("/api/v1/projects/:projectId/topic-library/analyze", authApiKey, async 
           project_id,
           feature: "topic_library.analyze",
           provider: "llm",
-          mode: null,
+          mode: e.apiMode || null,
           request_id,
           status: "error",
           request_json: {
@@ -2429,7 +2429,14 @@ app.post("/api/v1/projects/:projectId/topic-library/analyze", authApiKey, async 
           },
           response_json: {
             latency_ms: Date.now() - startedAt,
-            error: e.message
+            error: e.message,
+            api_mode: e.apiMode || null,
+            actual_model: e.actualModelName || null,
+            api_url: e.apiUrl || null,
+            upstream_provider: e.upstreamProvider || null,
+            upstream_status: typeof e.upstreamStatus === "number" ? e.upstreamStatus : null,
+            upstream_body_preview: e.upstreamBodyPreview || null,
+            timeout_ms: typeof e.timeoutMs === "number" ? e.timeoutMs : null
           }
         });
 

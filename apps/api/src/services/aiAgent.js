@@ -87,6 +87,19 @@ function estimateTokensFromText(text) {
   return Math.max(1, Math.ceil((text || "").length / 4));
 }
 
+function buildUpstreamBodyPreview(value, maxLength = 220) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .replace(/<[^>]*>/g, "")
+    .slice(0, maxLength);
+}
+
+function buildLlmCallError(message, meta = {}) {
+  const error = new Error(message);
+  Object.assign(error, meta);
+  return error;
+}
+
 function buildPositioningInstruction(systemInstruction, currentProfile) {
   return `${systemInstruction || "你是账号定位专家。"}
       
@@ -442,6 +455,7 @@ export async function generateContentProductionStep(systemInstruction, stepData,
 async function callLlmWithPrompt(API_URL, actualModelName, apiConfig, systemInstruction, promptText, cover_image = null, requestOptions = {}) {
   const { useGptsChatApi, useGptsMessagesApi, apiMode, modelName } = apiConfig;
   const maxTokens = Number(requestOptions.maxTokens || 8192);
+  const upstreamProvider = apiMode === "native-gemini" ? "native-gemini" : "gpts";
   let payload, headers;
 
   if (useGptsChatApi) {
@@ -520,7 +534,16 @@ async function callLlmWithPrompt(API_URL, actualModelName, apiConfig, systemInst
       });
     } catch (error) {
       if (error?.name === "AbortError") {
-        throw new Error(`API Timeout: ${Math.round(timeoutMs / 1000)}s`);
+        throw buildLlmCallError(`API Timeout: ${Math.round(timeoutMs / 1000)}s`, {
+          apiMode,
+          modelName,
+          actualModelName,
+          apiUrl: API_URL,
+          upstreamProvider,
+          upstreamStatus: null,
+          upstreamBodyPreview: null,
+          timeoutMs
+        });
       }
       throw error;
     } finally {
@@ -533,17 +556,24 @@ async function callLlmWithPrompt(API_URL, actualModelName, apiConfig, systemInst
 
   if (!response.ok) {
     const errorText = await response.text();
+    const compactError = buildUpstreamBodyPreview(errorText);
+    const errorMeta = {
+      apiMode,
+      modelName,
+      actualModelName,
+      apiUrl: API_URL,
+      upstreamProvider,
+      upstreamStatus: response.status,
+      upstreamBodyPreview: compactError || null,
+      timeoutMs
+    };
     if (response.status === 504) {
-      throw new Error("API Error: 504 网关超时，请稍后重试或切换模型");
+      throw buildLlmCallError("API Error: 504 网关超时，请稍后重试或切换模型", errorMeta);
     }
     if (response.status === 570 || response.status === 520 || response.status === 522 || response.status === 524) {
-      throw new Error("API Error: 上游 Claude 服务暂时不可用，请稍后重试或切换模型");
+      throw buildLlmCallError("API Error: 上游 Claude 服务暂时不可用，请稍后重试或切换模型", errorMeta);
     }
-    const compactError = String(errorText || "")
-      .replace(/\s+/g, " ")
-      .replace(/<[^>]*>/g, "")
-      .slice(0, 220);
-    throw new Error(`API Error: ${response.status} ${compactError || "请求失败"}`);
+    throw buildLlmCallError(`API Error: ${response.status} ${compactError || "请求失败"}`, errorMeta);
   }
 
   const data = await response.json();
