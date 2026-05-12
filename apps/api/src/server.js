@@ -842,6 +842,8 @@ async function extractAudioTrackToPublicUrl(localPath, req, prefix = "topic_audi
 
   const filename = `${prefix}_${Date.now()}_${randomUUID()}.mp3`;
   const audioPath = path.join(uploadsDir, filename);
+  const targetSampleRate = String(Number(process.env.EXTRACT_AUDIO_SAMPLE_RATE || 12000));
+  const targetBitrate = String(process.env.EXTRACT_AUDIO_BITRATE || "24k");
   await runProcess("ffmpeg", [
     "-y",
     "-loglevel",
@@ -852,11 +854,11 @@ async function extractAudioTrackToPublicUrl(localPath, req, prefix = "topic_audi
     "-ac",
     "1",
     "-ar",
-    "16000",
+    targetSampleRate,
     "-c:a",
     "libmp3lame",
     "-b:a",
-    "64k",
+    targetBitrate,
     audioPath
   ], {
     timeoutMs: Number(process.env.FFMPEG_TIMEOUT_MS || 120000)
@@ -923,6 +925,7 @@ async function downloadMediaByYtDlp(sourceUrl, req, prefix = "topic_media") {
   if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
   const outTemplate = path.join(uploadsDir, `${prefix}_${Date.now()}_${randomUUID()}.%(ext)s`);
+  const formatSelector = String(process.env.YT_DLP_FORMAT || "worst[ext=mp4]/worst").trim();
   const args = [
     "-m",
     "yt_dlp",
@@ -934,7 +937,7 @@ async function downloadMediaByYtDlp(sourceUrl, req, prefix = "topic_media") {
     "-o",
     outTemplate,
     "-f",
-    "mp4/b",
+    formatSelector,
     sourceUrl
   ];
   const { stdout } = await runProcess(YT_DLP_PYTHON, args, {
