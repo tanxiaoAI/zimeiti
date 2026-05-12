@@ -5,8 +5,8 @@
   "scripts": {
     "dev": "node src/server.js",
     "start": "NODE_ENV=production node src/server.js",
-    "build": "node -e \"const fs=require('node:fs'); const {execSync}=require('node:child_process'); if(!fs.existsSync('web-dist/index.html')) { console.log('web-dist missing, building frontend assets...'); execSync('npm run build:web',{stdio:'inherit'}); } if(!fs.existsSync('web-dist/index.html')) { console.error('Missing web-dist/index.html after build:web'); process.exit(1); } console.log('Using frontend dist from apps/api/web-dist');\"",
-    "build:web": "node -e \"const {execSync}=require('node:child_process'); execSync('npm --workspace apps/web run build',{stdio:'inherit',cwd:'../..'});\" && rm -rf web-dist && cp -R ../web/dist web-dist",
+    "build": "node -e \"const fs=require('node:fs'); const {execSync}=require('node:child_process'); if(!fs.existsSync('frontend-static/index.html')) { console.log('frontend-static missing, building frontend assets...'); execSync('npm run build:web',{stdio:'inherit'}); } if(!fs.existsSync('frontend-static/index.html')) { console.error('Missing frontend-static/index.html after build:web'); process.exit(1); } console.log('Using frontend assets from apps/api/frontend-static');\"",
+    "build:web": "node -e \"const {execSync}=require('node:child_process'); execSync('npm --workspace apps/web run build',{stdio:'inherit',cwd:'../..'});\" && rm -rf frontend-static && cp -R ../web/dist frontend-static",
     "lint": "node -c src/server.js"
   },
   "dependencies": {

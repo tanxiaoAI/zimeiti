@@ -1,7 +1,7 @@
 node_modules/
 dist/
-!apps/api/web-dist/
-!apps/api/web-dist/**
+!apps/api/frontend-static/
+!apps/api/frontend-static/**
 .env
 .env.*
 apps/api/.data/
