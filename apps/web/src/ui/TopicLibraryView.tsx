@@ -52,26 +52,8 @@ function writeTopicLibraryConfig(accountId: string, field: string, value: string
   localStorage.setItem(getTopicLibraryConfigKey(accountId, field), value);
 }
 
-function getTopicExtractJobStorageKey(accountId: string, topicId: string) {
-  return `topic_library:${accountId}:${topicId}:extract_job_id`;
-}
-
 function getTopicExtractResolvedLinkStorageKey(accountId: string, topicId: string) {
   return `topic_library:${accountId}:${topicId}:extract_resolved_link`;
-}
-
-function readTopicExtractJobId(accountId: string, topicId: string) {
-  if (!accountId || !topicId) return "";
-  return localStorage.getItem(getTopicExtractJobStorageKey(accountId, topicId)) || "";
-}
-
-function writeTopicExtractJobId(accountId: string, topicId: string, jobId: string) {
-  if (!accountId || !topicId) return;
-  if (jobId) {
-    localStorage.setItem(getTopicExtractJobStorageKey(accountId, topicId), jobId);
-  } else {
-    localStorage.removeItem(getTopicExtractJobStorageKey(accountId, topicId));
-  }
 }
 
 function readTopicExtractResolvedLink(accountId: string, topicId: string) {
@@ -135,18 +117,11 @@ function parseStoredTopicAnalysisResult(fallbackModel: string, value: string | n
   return { model: fallbackModel, result: text, error: null } as TopicAiResultEntry;
 }
 
-function buildExtractDebugText(debug: any) {
+function buildParseDebugText(debug: any) {
   if (!debug) return "";
-  const parserLine = debug?.parser?.ok
-    ? `1. GetOne解析成功${debug?.parser?.parser ? `：${debug.parser.parser}` : ""}`
-    : `1. GetOne解析失败：${debug?.parser?.error || "未知错误"}`;
-  const mirrorLine = debug?.mirror?.ok
-    ? `2. 视频已下载到服务器(${debug?.mirror?.method || "unknown"})：${debug?.mirror?.mirroredMediaUrl || "已生成镜像地址"}`
-    : `2. 视频未下载到服务器：${debug?.mirror?.error || "未知错误"}`;
-  const asrLine = debug?.asr?.ok
-    ? "3. 语音识别解析成功"
-    : `3. 语音识别解析失败：${debug?.asr?.error || debug?.asr?.finalStatusMessage || "未知错误"}`;
-  return [parserLine, mirrorLine, asrLine].join("\n");
+  return debug?.parser?.ok
+    ? `GetOne解析成功${debug?.parser?.parser ? `：${debug.parser.parser}` : ""}`
+    : `GetOne解析失败：${debug?.parser?.error || "未知错误"}`;
 }
 
 function getResolvedExtractLink(data: any) {
@@ -678,7 +653,7 @@ export function TopicLibraryView({ activeAccountId, onEnterProduction, productio
           <div className="flex items-center gap-2">
             <h2 className="text-xl font-semibold tracking-tight">选题库</h2>
           </div>
-          <p className="text-muted-foreground text-xs">以多维表格形式管理选题，支持参考文案提取与多模型 AI 分析。</p>
+          <p className="text-muted-foreground text-xs">以多维表格形式管理选题，支持参考链接解析与多模型 AI 分析。</p>
         </div>
         <Button
           size="sm"
@@ -816,7 +791,7 @@ export function TopicLibraryView({ activeAccountId, onEnterProduction, productio
                           className={`topic-library-action ${topic.ref_content ? "topic-library-action-view-copy" : "topic-library-action-extract"}`}
                           onClick={() => setCopyDrawer(topic)}
                         >
-                          {topic.ref_content ? "查看/修改" : "点击提取"}
+                          {topic.ref_content ? "查看/修改" : "点击解析"}
                         </Button>
                       </TableCell>
                       <TableCell>
@@ -969,11 +944,6 @@ function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
     }
   }, [topic, activeAccountId]);
 
-  const clearStoredJobId = () => {
-    if (!activeAccountId || !topic?.id) return;
-    writeTopicExtractJobId(activeAccountId, topic.id, "");
-  };
-
   const persistResolvedLink = (nextResolvedLink: string) => {
     const normalized = String(nextResolvedLink || "").trim();
     setResolvedLink(normalized);
@@ -981,115 +951,17 @@ function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
     writeTopicExtractResolvedLink(activeAccountId, topic.id, normalized);
   };
 
-  const applyExtractResult = (data: any) => {
-    const transcriptContent = typeof data?.content === "string" ? data.content.trim() : "";
-    const debugText = buildExtractDebugText(data?.extract_debug);
+  const applyParseResult = (data: any) => {
     const nextResolvedLink = getResolvedExtractLink(data);
     if (nextResolvedLink) {
       persistResolvedLink(nextResolvedLink);
-    }
-    const isTitleDescFallback = data?.extract_fallback?.source === "title_desc_fallback";
-    const fallbackContent = typeof data?.fallback_content === "string" && data.fallback_content.trim()
-      ? data.fallback_content.trim()
-      : (isTitleDescFallback ? transcriptContent : "");
-
-    if (transcriptContent && !isTitleDescFallback) {
-      setContent(transcriptContent);
-      onUpdate(topic.id, 'ref_content', transcriptContent);
-      setExtractStatusText("提取完成，已填入参考文案");
-      clearStoredJobId();
+      setExtractStatusText("解析完成，已更新解析后链接");
       return;
     }
-
-    if (fallbackContent) {
-      const useFallback = window.confirm(
-        `这次没提取到视频口播文案，当前拿到的是标题/正文简介，不会自动覆盖。\n\n${debugText ? `${debugText}\n\n` : ""}点击“确定”可暂时填入参考文案；点击“取消”保留当前内容。`
-      );
-      if (useFallback) {
-        setContent(fallbackContent);
-        onUpdate(topic.id, 'ref_content', fallbackContent);
-        setExtractStatusText("提取完成，已填入标题/简介兜底内容");
-      } else {
-        setExtractStatusText("提取完成，但未自动覆盖当前内容");
-      }
-      clearStoredJobId();
-      return;
-    }
-
-    setExtractStatusText("提取结束，但没有拿到可用文案");
-    clearStoredJobId();
-    alert(`提取失败：没有拿到可用的视频文案${debugText ? `\n\n${debugText}` : ""}`);
+    const debugText = buildParseDebugText(data?.extract_debug);
+    setExtractStatusText("解析结束，但没有拿到可用链接");
+    alert(`解析失败：没有拿到可用的解析后链接${debugText ? `\n\n${debugText}` : ""}`);
   };
-
-  const pollExtractJob = async (jobId: string, options?: { silentOnTimeout?: boolean; silentOnFailed?: boolean }) => {
-    let finalJob: any = null;
-    for (let i = 0; i < 720; i += 1) {
-      const job: any = await apiGet(`/api/v1/projects/${activeAccountId}/topic-library/extract/${jobId}`, "demo-key");
-      finalJob = job;
-      setExtractStatusText(job?.progress_text || "正在提取中...");
-      const nextResolvedLink = getResolvedExtractLink(job);
-      if (nextResolvedLink) {
-        persistResolvedLink(nextResolvedLink);
-      }
-
-      if (job?.status === "succeeded") {
-        applyExtractResult(job?.result_json || {});
-        return true;
-      }
-
-      if (job?.status === "failed") {
-        const debugText = buildExtractDebugText(job?.debug_json);
-        const failedMessage = String(job?.error_message || "提取失败");
-        setExtractStatusText(/已失效/.test(failedMessage) ? "上次提取任务已失效，可重新点击提取" : "提取失败");
-        clearStoredJobId();
-        if (!options?.silentOnFailed) {
-          alert(`${failedMessage}${debugText ? `\n\n${debugText}` : ""}`);
-        }
-        return true;
-      }
-
-      await new Promise((resolve) => window.setTimeout(resolve, 1500));
-    }
-
-    const timeoutMessage = finalJob?.progress_text
-      ? `${finalJob.progress_text}，后台任务仍在继续。请稍后重新打开查看结果，或再次点击“提取”继续等待。`
-      : "提取任务仍在后台执行，请稍后重新打开查看结果，或再次点击“提取”继续等待。";
-    setExtractStatusText(timeoutMessage);
-    if (!options?.silentOnTimeout) {
-      alert(timeoutMessage);
-    }
-    return false;
-  };
-
-  useEffect(() => {
-    if (!topic?.id || !activeAccountId) return;
-    const existingJobId = readTopicExtractJobId(activeAccountId, topic.id);
-    if (!existingJobId) return;
-
-    let cancelled = false;
-    setExtracting(true);
-    setExtractStatusText("检测到上次提取任务仍在进行，正在恢复进度...");
-
-    (async () => {
-      try {
-        if (!cancelled) {
-          await pollExtractJob(existingJobId, { silentOnTimeout: true, silentOnFailed: true });
-        }
-      } catch (_error) {
-        if (!cancelled) {
-          setExtractStatusText("上次提取任务恢复失败，可重新点击提取继续");
-        }
-      } finally {
-        if (!cancelled) {
-          setExtracting(false);
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [topic?.id, activeAccountId]);
 
   const handleExtract = async () => {
     if (!topic?.ref_link) {
@@ -1097,26 +969,21 @@ function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
       return;
     }
     setExtracting(true);
-    setExtractStatusText("正在创建提取任务...");
+    setExtractStatusText("正在解析链接...");
     try {
-      const created: any = await apiPost(
+      const parsed: any = await apiPost(
         `/api/v1/projects/${activeAccountId}/topic-library/extract`,
         { topic_id: topic.id, link: topic.ref_link, platform: topic.ref_platform },
         "demo-key"
       );
-      const jobId = String(created?.job_id || "").trim();
-      if (!jobId) {
-        throw new Error("提取任务创建失败，请稍后重试");
-      }
-      writeTopicExtractJobId(activeAccountId, topic.id, jobId);
-      await pollExtractJob(jobId);
+      applyParseResult(parsed);
     } catch (e: any) {
       const rawMessage = String(e?.message || "未知错误");
       const friendlyMessage = /Failed to fetch|NetworkError|Load failed|fetch/i.test(rawMessage)
-        ? "网络连接中断，后台任务可能仍在继续。请稍后重新打开查看结果，或再次点击“提取”继续等待。"
+        ? "网络连接中断，请稍后重试"
         : rawMessage;
-      setExtractStatusText("提取异常，请稍后重试");
-      alert("提取异常: " + friendlyMessage);
+      setExtractStatusText("解析异常，请稍后重试");
+      alert("解析异常: " + friendlyMessage);
     } finally {
       setExtracting(false);
     }
@@ -1135,7 +1002,7 @@ function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
         <SheetHeader className="mb-6">
           <SheetTitle>参考文案内容</SheetTitle>
           <SheetDescription>
-            你可以自动提取视频/图文的文案，或者手动粘贴修改。
+            你可以先解析参考链接获取视频直链，再手动填写参考文案。
           </SheetDescription>
         </SheetHeader>
         
@@ -1144,7 +1011,7 @@ function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
             <Input readOnly value={topic?.ref_link || "未填写链接"} className="bg-muted text-muted-foreground flex-1" />
             <Button type="button" className="topic-copy-extract-btn topic-primary-btn" onClick={handleExtract} disabled={extracting}>
               {extracting ? <Loader2 size={16} className="spin mr-2" /> : <FileText size={16} className="mr-2" />}
-              {extracting ? "提取中..." : "提取"}
+              {extracting ? "解析中..." : "解析"}
             </Button>
           </div>
           <div className="topic-copy-toolbar mt-2 items-center">

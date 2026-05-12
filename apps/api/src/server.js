@@ -2304,55 +2304,49 @@ app.post("/api/v1/projects/:projectId/topic-library/reorder", authApiKey, (req, 
 
 app.post("/api/v1/projects/:projectId/topic-library/extract", authApiKey, async (req, res) => {
   const request_id = req.context?.requestId;
-  const { link, platform, topic_id } = req.body;
+  const { link, platform } = req.body;
   const project = getProject(req.params.projectId);
   if (!project) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在" }, request_id));
   if (!link) return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "缺少参考链接" }, request_id));
 
   if (platform !== "小红书" && platform !== "抖音") {
-    return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "仅支持解析小红书和抖音视频内容" }, request_id));
+    return res.status(400).json(fail({ code: ErrorCodes.VALIDATION_FAILED, message: "仅支持解析小红书和抖音视频链接" }, request_id));
   }
 
   try {
-    let job = findLatestActiveTopicExtractJob(project.id, {
-      topic_id: topic_id || null,
-      link,
-      platform
-    });
-    let reused = true;
-
-    if (job && isTopicExtractJobStale(job)) {
-      expireStaleTopicExtractJob(job);
-      job = null;
-      reused = false;
-    }
-
-    if (!job) {
-      reused = false;
-      job = createTopicExtractJob(project.id, {
-        topic_id: topic_id || null,
-        link,
-        platform,
-        status: "pending",
-        stage: "queued",
-        progress_text: "任务已创建，等待开始"
-      });
-      const requestMeta = snapshotRequestMeta(req);
-      void runTopicLibraryExtractJob(job.id, requestMeta);
-    }
-
+    const parsed = await resolveVideoUrlByPlatform(link, platform);
+    const resolvedMediaUrls = dedupeUrls([...(parsed.candidateVideoUrls || []), parsed.videoUrl]);
     res.json(ok({
-      job_id: job.id,
-      status: job.status,
-      stage: job.stage,
-      progress_text: job.progress_text,
-      reused
+      content: null,
+      content_source: null,
+      fallback_content: null,
+      platform,
+      source_link: link,
+      resolved_video_url: parsed.videoUrl,
+      resolved_video_candidates: resolvedMediaUrls,
+      mirrored_media_url: null,
+      mirrored_audio_url: null,
+      extract_fallback: null,
+      extract_debug: {
+        parser: {
+          ...(parsed.parserDebug || {}),
+          ok: true,
+          parser: parsed.parser,
+          videoSource: parsed.videoSource || null,
+          resolvedVideoUrl: parsed.videoUrl,
+          candidateVideoUrls: resolvedMediaUrls,
+          durationMs: parsed.durationMs || null
+        }
+      },
+      parser: parsed.parser,
+      note_title: parsed.noteTitle,
+      note_desc: parsed.noteDesc
     }, request_id));
   } catch (e) {
     console.error(e);
     res.status(500).json(fail({
       code: ErrorCodes.INTERNAL_ERROR,
-      message: `提取任务创建失败：${e.message}`
+      message: `解析链接失败：${e.message}`
     }, request_id));
   }
 });
@@ -2361,17 +2355,10 @@ app.get("/api/v1/projects/:projectId/topic-library/extract/:jobId", authApiKey, 
   const request_id = req.context?.requestId;
   const project = getProject(req.params.projectId);
   if (!project) return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "项目不存在" }, request_id));
-
-  let job = getTopicExtractJob(req.params.jobId);
-  if (!job || job.project_id !== project.id) {
-    return res.status(404).json(fail({ code: ErrorCodes.NOT_FOUND, message: "提取任务不存在" }, request_id));
-  }
-
-  if (isTopicExtractJobStale(job)) {
-    job = expireStaleTopicExtractJob(job);
-  }
-
-  res.json(ok(job, request_id));
+  res.status(410).json(fail({
+    code: ErrorCodes.NOT_FOUND,
+    message: "视频文本提取任务已停用，请直接使用“解析”按钮获取解析后链接"
+  }, request_id));
 });
 
 app.post("/api/v1/projects/:projectId/topic-library/analyze", authApiKey, async (req, res) => {
