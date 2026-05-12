@@ -525,17 +525,24 @@ function rankDouyinCandidate(candidate) {
   const url = String(candidate?.url || "").trim();
   let score = 0;
 
-  if (source.includes("download_addr")) score += 120;
-  if (source.includes("download_suffix_logo_addr")) score += 100;
-  if (source.includes("bit_rate")) score += 80;
-  if (source.includes("play_addr_h264")) score += 70;
-  if (source.includes("play_addr")) score += 60;
+  if (source.includes("download_addr")) score += 160;
+  if (source.includes("download_suffix_logo_addr")) score += 140;
+  if (source.includes("play_addr_h264")) score += 80;
+  if (source.includes("play_addr")) score += 70;
   if (source.includes("play_addr_265")) score += 40;
+  if (source.includes("bit_rate")) score -= 120;
   if (/douyinvod\.com/i.test(url)) score += 30;
   if (/\/aweme\/v1\/play/i.test(url)) score -= 20;
+  if (/\/media-video-(avc1|hvc1)\//i.test(url)) score -= 240;
+  if (/\/aweme\/v1\/play\/dash\//i.test(url)) score -= 240;
   if (/watermark=1/i.test(url)) score -= 10;
 
   return score;
+}
+
+function isLikelyVideoOnlyDouyinUrl(url) {
+  const value = String(url || "").trim().toLowerCase();
+  return /\/media-video-(avc1|hvc1)\//i.test(value) || /\/aweme\/v1\/play\/dash\//i.test(value);
 }
 
 async function probeDouyinVideoCandidate(url) {
@@ -548,7 +555,7 @@ async function probeDouyinVideoCandidate(url) {
     const contentType = String(response.headers.get("content-type") || "").toLowerCase();
     const finalUrl = String(response.url || url).trim();
     const isVideo = contentType.startsWith("video/") || /\.mp4(\?|$)/i.test(finalUrl);
-    if (isVideo && response.ok) {
+    if (isVideo && response.ok && !isLikelyVideoOnlyDouyinUrl(finalUrl)) {
       if (response.body?.cancel) {
         try { await response.body.cancel(); } catch (_error) {}
       }
