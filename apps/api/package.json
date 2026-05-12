@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "node src/server.js",
     "start": "NODE_ENV=production node src/server.js",
-    "build": "node -e \"const fs=require('node:fs'); if(!fs.existsSync('web-dist/index.html')) { console.error('Missing web-dist/index.html. Run npm run build:web from apps/api locally, then commit apps/api/web-dist before deploy.'); process.exit(1); } console.log('Using committed frontend dist from apps/api/web-dist');\"",
+    "build": "node -e \"const fs=require('node:fs'); const {execSync}=require('node:child_process'); if(!fs.existsSync('web-dist/index.html')) { console.log('web-dist missing, building frontend assets...'); execSync('npm run build:web',{stdio:'inherit'}); } if(!fs.existsSync('web-dist/index.html')) { console.error('Missing web-dist/index.html after build:web'); process.exit(1); } console.log('Using frontend dist from apps/api/web-dist');\"",
     "build:web": "node -e \"const {execSync}=require('node:child_process'); execSync('npm --workspace apps/web run build',{stdio:'inherit',cwd:'../..'});\" && rm -rf web-dist && cp -R ../web/dist web-dist",
     "lint": "node -c src/server.js"
   },
