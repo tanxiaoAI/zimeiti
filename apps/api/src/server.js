@@ -1319,12 +1319,7 @@ async function transcribeMediaWithFallback(mediaUrls, options = {}) {
         mediaUrl,
         error: error.message
       });
-      error.stepDebug = {
-        ok: false,
-        stage: "bailian_asr",
-        attempts
-      };
-      throw error;
+      continue;
     }
   }
 
@@ -1424,157 +1419,204 @@ async function executeTopicLibraryExtract(link, platform, requestMeta, onProgres
     durationMs: parsed.durationMs || null
   };
 
-  await notifyProgress({
-    stage: "mirroring",
-    progressText: platform === "抖音" ? "正在下载视频并生成音频..." : "正在下载视频内容...",
-    debugJson: extractDebug
-  });
-
   let mirroredMediaUrl = null;
   let mirroredAudioUrl = null;
   let mirroredLocalPath = null;
   let audioSegments = [];
-  const mirrorAttempts = [];
-  if (platform === "抖音") {
-    try {
-      const ytDlpResult = await downloadMediaByYtDlp(link, requestLike, "topic_extract");
-      mirroredMediaUrl = ytDlpResult.publicUrl;
-      mirroredLocalPath = ytDlpResult.localPath;
-      mirrorAttempts.push({
-        ok: true,
-        method: ytDlpResult.method,
-        sourceUrl: link,
-        mirroredMediaUrl,
-        localPath: ytDlpResult.localPath,
-        filename: ytDlpResult.filename
-      });
-    } catch (ytDlpError) {
-      console.warn("topic-library extract yt-dlp failed:", ytDlpError.message);
-      mirrorAttempts.push({
-        ok: false,
-        method: "yt-dlp",
-        sourceUrl: link,
-        error: /Fresh cookies/i.test(ytDlpError.message)
-          ? "yt-dlp 需要 fresh cookies，当前服务端未提供可用 cookies"
-          : ytDlpError.message
-      });
-    }
-  }
-  if (!mirroredMediaUrl) {
-    try {
-      const mirrorResult = await mirrorRemoteMediaCandidatesToPublicUrl(resolvedMediaUrls, requestLike, "topic_extract");
-      mirroredMediaUrl = mirrorResult.publicUrl;
-      mirroredLocalPath = mirrorResult.localPath;
-      mirrorAttempts.push(...(mirrorResult.attempts || []));
-    } catch (mirrorError) {
-      console.warn("topic-library extract mirror failed:", mirrorError.message);
-      if (Array.isArray(mirrorError.attempts) && mirrorError.attempts.length > 0) {
-        mirrorAttempts.push(...mirrorError.attempts);
-      } else {
-        mirrorAttempts.push({
-          ok: false,
-          method: "fetch",
-          sourceUrl: parsed.videoUrl,
-          error: mirrorError.message
-        });
-      }
-    }
-  }
-  let audioExtract = null;
-  if (mirroredLocalPath) {
-    try {
-      const audioResult = await extractAudioTrackToPublicUrl(mirroredLocalPath, requestLike, "topic_extract_audio");
-      mirroredAudioUrl = audioResult.publicUrl;
-      const shouldSegmentAudio = Number(parsed.durationMs || 0) >= Number(process.env.BAILIAN_ASR_SEGMENT_THRESHOLD_MS || 0);
-      if (shouldSegmentAudio) {
-        audioSegments = await splitAudioTrackToPublicUrls(audioResult.localPath, requestLike, "topic_extract_audio_seg");
-      }
-      audioExtract = {
-        ok: true,
-        method: audioResult.method,
-        mirroredAudioUrl,
-        localPath: audioResult.localPath,
-        filename: audioResult.filename,
-        segmented: audioSegments.length > 0,
-        segmentCount: audioSegments.length,
-        segments: audioSegments.map((segment) => ({
-          index: segment.index,
-          filename: segment.filename,
-          publicUrl: segment.publicUrl
-        }))
-      };
-    } catch (audioError) {
-      console.warn("topic-library extract audio convert failed:", audioError.message);
-      audioExtract = {
-        ok: false,
-        method: "ffmpeg-mp3",
-        error: audioError.message
-      };
-    }
-  }
-  const successfulMirrorAttempt = mirrorAttempts.find((item) => item.ok) || null;
-  extractDebug.mirror = successfulMirrorAttempt
-    ? {
-        ok: true,
-        stage: "mirror",
-        method: successfulMirrorAttempt.method,
-        remoteUrl: successfulMirrorAttempt.sourceUrl,
-        mirroredMediaUrl: successfulMirrorAttempt.mirroredMediaUrl,
-        localPath: successfulMirrorAttempt.localPath,
-        filename: successfulMirrorAttempt.filename,
-        contentType: successfulMirrorAttempt.contentType || "",
-        mirroredAudioUrl,
-        audioExtract,
-        attempts: mirrorAttempts
-      }
-    : {
-        ok: false,
-        stage: "mirror",
-        remoteUrl: parsed.videoUrl,
-        error: mirrorAttempts[mirrorAttempts.length - 1]?.error || "媒体文件下载失败",
-        mirroredAudioUrl,
-        audioExtract,
-        attempts: mirrorAttempts
-      };
-
-  await notifyProgress({
-    stage: "transcribing",
-    progressText: "正在调用百炼语音识别，请稍候...",
-    debugJson: extractDebug
-  });
-
   let transcript = "";
   let fallbackContent = "";
   let extractFallback = null;
+
+  await notifyProgress({
+    stage: "transcribing",
+    progressText: "已解析视频链接，正在优先直连百炼识别...",
+    debugJson: extractDebug
+  });
+
   try {
-    const transcribeResult = audioSegments.length > 0
-      ? await transcribeSegmentedMediaWithBailian(audioSegments, {
-          segmentDurationMs: Number(process.env.BAILIAN_ASR_SEGMENT_SECONDS || 150) * 1000
-        })
-      : await transcribeMediaWithFallback([
-          mirroredAudioUrl,
-          mirroredMediaUrl,
-          ...resolvedMediaUrls
-        ], {
-          durationMs: parsed.durationMs
-        });
-    transcript = transcribeResult.text;
-    extractDebug.asr = transcribeResult.debug;
-  } catch (transcribeError) {
+    const directTranscribeResult = await transcribeMediaWithFallback(resolvedMediaUrls, {
+      durationMs: parsed.durationMs
+    });
+    transcript = directTranscribeResult.text;
+    extractDebug.asr = directTranscribeResult.debug;
+    extractDebug.mirror = {
+      ok: true,
+      stage: "mirror",
+      method: "direct_remote_url",
+      remoteUrl: parsed.videoUrl,
+      mirroredMediaUrl: null,
+      localPath: null,
+      filename: null,
+      contentType: "",
+      mirroredAudioUrl: null,
+      audioExtract: {
+        ok: true,
+        method: "direct_remote_url",
+        skippedLocalMirror: true
+      },
+      attempts: resolvedMediaUrls.map((url) => ({
+        ok: true,
+        method: "direct_remote_url",
+        sourceUrl: url
+      }))
+    };
+  } catch (directTranscribeError) {
     extractDebug.asr = {
-      ...(transcribeError.stepDebug || {}),
+      ...(directTranscribeError.stepDebug || {}),
       ok: false,
-      error: transcribeError.message
+      error: directTranscribeError.message,
+      directRemoteAttempt: true
     };
-    fallbackContent = buildTopicExtractFallbackContent(parsed);
-    if (!fallbackContent) {
-      transcribeError.extractDebug = extractDebug;
-      throw transcribeError;
+
+    await notifyProgress({
+      stage: "mirroring",
+      progressText: platform === "抖音" ? "直连百炼失败，正在下载视频并生成音频后重试..." : "直连百炼失败，正在下载视频内容后重试...",
+      debugJson: extractDebug
+    });
+
+    const mirrorAttempts = [];
+    if (platform === "抖音") {
+      try {
+        const ytDlpResult = await downloadMediaByYtDlp(link, requestLike, "topic_extract");
+        mirroredMediaUrl = ytDlpResult.publicUrl;
+        mirroredLocalPath = ytDlpResult.localPath;
+        mirrorAttempts.push({
+          ok: true,
+          method: ytDlpResult.method,
+          sourceUrl: link,
+          mirroredMediaUrl,
+          localPath: ytDlpResult.localPath,
+          filename: ytDlpResult.filename
+        });
+      } catch (ytDlpError) {
+        console.warn("topic-library extract yt-dlp failed:", ytDlpError.message);
+        mirrorAttempts.push({
+          ok: false,
+          method: "yt-dlp",
+          sourceUrl: link,
+          error: /Fresh cookies/i.test(ytDlpError.message)
+            ? "yt-dlp 需要 fresh cookies，当前服务端未提供可用 cookies"
+            : ytDlpError.message
+        });
+      }
     }
-    extractFallback = {
-      source: "title_desc_fallback",
-      reason: transcribeError.message
-    };
+    if (!mirroredMediaUrl) {
+      try {
+        const mirrorResult = await mirrorRemoteMediaCandidatesToPublicUrl(resolvedMediaUrls, requestLike, "topic_extract");
+        mirroredMediaUrl = mirrorResult.publicUrl;
+        mirroredLocalPath = mirrorResult.localPath;
+        mirrorAttempts.push(...(mirrorResult.attempts || []));
+      } catch (mirrorError) {
+        console.warn("topic-library extract mirror failed:", mirrorError.message);
+        if (Array.isArray(mirrorError.attempts) && mirrorError.attempts.length > 0) {
+          mirrorAttempts.push(...mirrorError.attempts);
+        } else {
+          mirrorAttempts.push({
+            ok: false,
+            method: "fetch",
+            sourceUrl: parsed.videoUrl,
+            error: mirrorError.message
+          });
+        }
+      }
+    }
+
+    let audioExtract = null;
+    if (mirroredLocalPath) {
+      try {
+        const audioResult = await extractAudioTrackToPublicUrl(mirroredLocalPath, requestLike, "topic_extract_audio");
+        mirroredAudioUrl = audioResult.publicUrl;
+        const shouldSegmentAudio = Number(parsed.durationMs || 0) >= Number(process.env.BAILIAN_ASR_SEGMENT_THRESHOLD_MS || 0);
+        if (shouldSegmentAudio) {
+          audioSegments = await splitAudioTrackToPublicUrls(audioResult.localPath, requestLike, "topic_extract_audio_seg");
+        }
+        audioExtract = {
+          ok: true,
+          method: audioResult.method,
+          mirroredAudioUrl,
+          localPath: audioResult.localPath,
+          filename: audioResult.filename,
+          segmented: audioSegments.length > 0,
+          segmentCount: audioSegments.length,
+          segments: audioSegments.map((segment) => ({
+            index: segment.index,
+            filename: segment.filename,
+            publicUrl: segment.publicUrl
+          }))
+        };
+      } catch (audioError) {
+        console.warn("topic-library extract audio convert failed:", audioError.message);
+        audioExtract = {
+          ok: false,
+          method: "ffmpeg-mp3",
+          error: audioError.message
+        };
+      }
+    }
+
+    const successfulMirrorAttempt = mirrorAttempts.find((item) => item.ok) || null;
+    extractDebug.mirror = successfulMirrorAttempt
+      ? {
+          ok: true,
+          stage: "mirror",
+          method: successfulMirrorAttempt.method,
+          remoteUrl: successfulMirrorAttempt.sourceUrl,
+          mirroredMediaUrl: successfulMirrorAttempt.mirroredMediaUrl,
+          localPath: successfulMirrorAttempt.localPath,
+          filename: successfulMirrorAttempt.filename,
+          contentType: successfulMirrorAttempt.contentType || "",
+          mirroredAudioUrl,
+          audioExtract,
+          attempts: mirrorAttempts
+        }
+      : {
+          ok: false,
+          stage: "mirror",
+          remoteUrl: parsed.videoUrl,
+          error: mirrorAttempts[mirrorAttempts.length - 1]?.error || "媒体文件下载失败",
+          mirroredAudioUrl,
+          audioExtract,
+          attempts: mirrorAttempts
+        };
+
+    await notifyProgress({
+      stage: "transcribing",
+      progressText: "正在调用百炼语音识别，请稍候...",
+      debugJson: extractDebug
+    });
+
+    try {
+      const transcribeResult = audioSegments.length > 0
+        ? await transcribeSegmentedMediaWithBailian(audioSegments, {
+            segmentDurationMs: Number(process.env.BAILIAN_ASR_SEGMENT_SECONDS || 150) * 1000
+          })
+        : await transcribeMediaWithFallback([
+            mirroredAudioUrl,
+            mirroredMediaUrl,
+            ...resolvedMediaUrls
+          ], {
+            durationMs: parsed.durationMs
+          });
+      transcript = transcribeResult.text;
+      extractDebug.asr = transcribeResult.debug;
+    } catch (transcribeError) {
+      extractDebug.asr = {
+        ...(transcribeError.stepDebug || {}),
+        ok: false,
+        error: transcribeError.message,
+        directRemoteAttempt: true,
+        localMirrorFallback: true
+      };
+      fallbackContent = buildTopicExtractFallbackContent(parsed);
+      if (!fallbackContent) {
+        transcribeError.extractDebug = extractDebug;
+        throw transcribeError;
+      }
+      extractFallback = {
+        source: "title_desc_fallback",
+        reason: transcribeError.message
+      };
+    }
   }
 
   return {
