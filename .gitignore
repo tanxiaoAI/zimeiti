@@ -1,7 +1,7 @@
 node_modules/
 dist/
-!apps/api/dist/
-!apps/api/dist/**
+!apps/api/web-dist/
+!apps/api/web-dist/**
 .env
 .env.*
 apps/api/.data/

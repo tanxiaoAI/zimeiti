@@ -271,7 +271,7 @@ app.use("/static", express.static(path.join(__dirname, "..", "public", "static")
 app.use("/static/uploads", express.static(uploadsDir));
 
 // 静态资源（前端构建产物）
-let webDistPath = path.join(__dirname, "..", "dist");
+let webDistPath = path.join(__dirname, "..", "web-dist");
 if (!fs.existsSync(webDistPath)) {
   webDistPath = path.join(__dirname, "..", "..", "web", "dist");
 }
