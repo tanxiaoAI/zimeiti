@@ -1,5 +1,7 @@
 node_modules/
 dist/
+!apps/api/dist/
+!apps/api/dist/**
 .env
 .env.*
 apps/api/.data/

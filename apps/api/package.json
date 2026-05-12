@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "node src/server.js",
     "start": "NODE_ENV=production node src/server.js",
-    "build": "cd ../../ && npm --workspace apps/web run build && rm -rf apps/api/dist && cp -R apps/web/dist apps/api/dist",
+    "build": "node -e \"const fs=require('node:fs'); if(!fs.existsSync('dist/index.html')) { console.error('Missing apps/api/dist/index.html. Run `npm --workspace apps/api run build:web` locally and commit apps/api/dist before deploy.'); process.exit(1); } console.log('Using committed frontend dist from apps/api/dist');\"",
+    "build:web": "cd ../../ && npm --workspace apps/web run build && rm -rf apps/api/dist && cp -R apps/web/dist apps/api/dist",
     "lint": "node -c src/server.js"
   },
   "dependencies": {
