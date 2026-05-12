@@ -1027,6 +1027,10 @@ function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
       const job: any = await apiGet(`/api/v1/projects/${activeAccountId}/topic-library/extract/${jobId}`, "demo-key");
       finalJob = job;
       setExtractStatusText(job?.progress_text || "正在提取中...");
+      const nextResolvedLink = getResolvedExtractLink(job);
+      if (nextResolvedLink) {
+        persistResolvedLink(nextResolvedLink);
+      }
 
       if (job?.status === "succeeded") {
         applyExtractResult(job?.result_json || {});
@@ -1036,10 +1040,6 @@ function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
       if (job?.status === "failed") {
         const debugText = buildExtractDebugText(job?.debug_json);
         const failedMessage = String(job?.error_message || "提取失败");
-        const nextResolvedLink = getResolvedExtractLink(job);
-        if (nextResolvedLink) {
-          persistResolvedLink(nextResolvedLink);
-        }
         setExtractStatusText(/已失效/.test(failedMessage) ? "上次提取任务已失效，可重新点击提取" : "提取失败");
         clearStoredJobId();
         if (!options?.silentOnFailed) {
