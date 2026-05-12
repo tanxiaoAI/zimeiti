@@ -520,7 +520,87 @@ function buildDouyinVideoCandidates(aweme) {
   });
 }
 
-function pickDouyinVideoUrl(getOneData) {
+function rankDouyinCandidate(candidate) {
+  const source = String(candidate?.source || "").toLowerCase();
+  const url = String(candidate?.url || "").trim();
+  let score = 0;
+
+  if (source.includes("download_addr")) score += 120;
+  if (source.includes("download_suffix_logo_addr")) score += 100;
+  if (source.includes("bit_rate")) score += 80;
+  if (source.includes("play_addr_h264")) score += 70;
+  if (source.includes("play_addr")) score += 60;
+  if (source.includes("play_addr_265")) score += 40;
+  if (/douyinvod\.com/i.test(url)) score += 30;
+  if (/\/aweme\/v1\/play/i.test(url)) score -= 20;
+  if (/watermark=1/i.test(url)) score -= 10;
+
+  return score;
+}
+
+async function probeDouyinVideoCandidate(url) {
+  const tryFetch = async (method, headers = {}) => {
+    const response = await fetchWithTimeout(url, {
+      method,
+      headers,
+      redirect: "follow"
+    }, 6000, `抖音候选链接探测超时(${method})`);
+    const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+    const finalUrl = String(response.url || url).trim();
+    const isVideo = contentType.startsWith("video/") || /\.mp4(\?|$)/i.test(finalUrl);
+    if (isVideo && response.ok) {
+      if (response.body?.cancel) {
+        try { await response.body.cancel(); } catch (_error) {}
+      }
+      return {
+        ok: true,
+        finalUrl
+      };
+    }
+    if (response.body?.cancel) {
+      try { await response.body.cancel(); } catch (_error) {}
+    }
+    return {
+      ok: false,
+      finalUrl
+    };
+  };
+
+  try {
+    return await tryFetch("HEAD");
+  } catch (_error) {
+    try {
+      return await tryFetch("GET", { Range: "bytes=0-1" });
+    } catch (_innerError) {
+      return { ok: false, finalUrl: String(url || "").trim() };
+    }
+  }
+}
+
+async function pickReachableDouyinCandidate(candidates) {
+  const ranked = [...(candidates || [])].sort((a, b) => rankDouyinCandidate(b) - rankDouyinCandidate(a));
+  for (const candidate of ranked.slice(0, 8)) {
+    const probed = await probeDouyinVideoCandidate(candidate.url);
+    if (probed.ok) {
+      return {
+        selected: {
+          ...candidate,
+          url: probed.finalUrl || candidate.url
+        },
+        orderedUrls: dedupeUrls([
+          probed.finalUrl || candidate.url,
+          ...ranked.map((item) => item.url)
+        ])
+      };
+    }
+  }
+  return {
+    selected: ranked[0] || null,
+    orderedUrls: dedupeUrls(ranked.map((item) => item.url))
+  };
+}
+
+async function pickDouyinVideoUrl(getOneData) {
   const aweme =
     getOneData?.aweme_detail ||
     getOneData?.aweme_details?.[0] ||
@@ -530,12 +610,13 @@ function pickDouyinVideoUrl(getOneData) {
 
   const preferredCandidates = buildDouyinVideoCandidates(aweme);
   if (preferredCandidates.length > 0) {
+    const picked = await pickReachableDouyinCandidate(preferredCandidates);
     return {
-      videoUrl: preferredCandidates[0].url,
-      candidateVideoUrls: preferredCandidates.map((item) => item.url),
+      videoUrl: picked.selected?.url || preferredCandidates[0].url,
+      candidateVideoUrls: picked.orderedUrls,
       noteTitle: aweme?.desc || aweme?.title || "",
       noteDesc: aweme?.desc || "",
-      videoSource: preferredCandidates[0].source,
+      videoSource: picked.selected?.source || preferredCandidates[0].source,
       durationMs: Number(aweme?.video?.duration || aweme?.duration || 0) || null
     };
   }
@@ -582,7 +663,7 @@ async function resolveVideoUrlByPlatform(link, platform) {
     const awemeId = awemeIdMatch?.[1] || awemeIdMatch?.[2] || "";
     const getOneData = await callGetOneApi("/api/douyin/fetch_video_detail", { share_text: link, aweme_id: awemeId });
     return {
-      ...pickDouyinVideoUrl(getOneData),
+      ...(await pickDouyinVideoUrl(getOneData)),
       parser: "getoneapi:douyin/fetch_video_detail",
       parserDebug: {
         ok: true,
