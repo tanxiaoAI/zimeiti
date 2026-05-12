@@ -358,8 +358,8 @@ export function TopicLibraryView({ activeAccountId, onEnterProduction, productio
   const applyUpdatedTopic = (updated: any) => {
     if (!updated?.id) return;
     setTopics(prev => prev.map(item => item.id === updated.id ? updated : item));
-    setCopyDrawer(prev => (prev && prev.id === updated.id) ? updated : prev);
-    setAiDrawer(prev => (prev && prev.id === updated.id) ? updated : prev);
+    setCopyDrawer((prev: any) => (prev && prev.id === updated.id) ? updated : prev);
+    setAiDrawer((prev: any) => (prev && prev.id === updated.id) ? updated : prev);
   };
 
   const moveTopicItems = (items: any[], activeId: string, overId: string) => {
@@ -1223,7 +1223,7 @@ function TopicAiDrawer({ topic, onClose, analysisState, onAnalyze, onToggleAgree
                 </Button>
               </div>
               <div className="flex flex-col gap-2">
-                {models.map((m, i) => (
+                {models.map((m: string, i: number) => (
                   <div key={`${i}-${m}`} className="flex items-center gap-2">
                     <div className="w-16 text-xs font-medium text-muted-foreground">模型 {i + 1}</div>
                     <Select
@@ -1279,8 +1279,8 @@ function TopicAiDrawer({ topic, onClose, analysisState, onAnalyze, onToggleAgree
           </div>
 
           <div className="grid gap-4 min-h-[400px]" style={{ gridTemplateColumns: resultGridColumns }}>
-            {models.map((model, i) => {
-              const res = results[i] || results.find(r => r.model === model);
+            {models.map((model: string, i: number) => {
+              const res = results[i] || results.find((r: TopicAiResultEntry) => r.model === model);
               const hasVisibleContent = Boolean(res?.error || res?.result);
               const isAgreed = Boolean(res?.agreed);
               return (
