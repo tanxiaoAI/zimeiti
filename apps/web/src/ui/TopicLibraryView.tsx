@@ -56,6 +56,10 @@ function getTopicExtractJobStorageKey(accountId: string, topicId: string) {
   return `topic_library:${accountId}:${topicId}:extract_job_id`;
 }
 
+function getTopicExtractResolvedLinkStorageKey(accountId: string, topicId: string) {
+  return `topic_library:${accountId}:${topicId}:extract_resolved_link`;
+}
+
 function readTopicExtractJobId(accountId: string, topicId: string) {
   if (!accountId || !topicId) return "";
   return localStorage.getItem(getTopicExtractJobStorageKey(accountId, topicId)) || "";
@@ -67,6 +71,20 @@ function writeTopicExtractJobId(accountId: string, topicId: string, jobId: strin
     localStorage.setItem(getTopicExtractJobStorageKey(accountId, topicId), jobId);
   } else {
     localStorage.removeItem(getTopicExtractJobStorageKey(accountId, topicId));
+  }
+}
+
+function readTopicExtractResolvedLink(accountId: string, topicId: string) {
+  if (!accountId || !topicId) return "";
+  return localStorage.getItem(getTopicExtractResolvedLinkStorageKey(accountId, topicId)) || "";
+}
+
+function writeTopicExtractResolvedLink(accountId: string, topicId: string, resolvedLink: string) {
+  if (!accountId || !topicId) return;
+  if (resolvedLink) {
+    localStorage.setItem(getTopicExtractResolvedLinkStorageKey(accountId, topicId), resolvedLink);
+  } else {
+    localStorage.removeItem(getTopicExtractResolvedLinkStorageKey(accountId, topicId));
   }
 }
 
@@ -129,6 +147,15 @@ function buildExtractDebugText(debug: any) {
     ? "3. 语音识别解析成功"
     : `3. 语音识别解析失败：${debug?.asr?.error || debug?.asr?.finalStatusMessage || "未知错误"}`;
   return [parserLine, mirrorLine, asrLine].join("\n");
+}
+
+function getResolvedExtractLink(data: any) {
+  return String(
+    data?.resolved_video_url ||
+    data?.extract_debug?.parser?.resolvedVideoUrl ||
+    data?.debug_json?.parser?.resolvedVideoUrl ||
+    ""
+  ).trim();
 }
 
 function stringifyTopicAnalysisResult(entry: TopicAiResultEntry | undefined) {
@@ -932,22 +959,35 @@ function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
   const [extracting, setExtracting] = useState(false);
   const [content, setContent] = useState("");
   const [extractStatusText, setExtractStatusText] = useState("");
+  const [resolvedLink, setResolvedLink] = useState("");
 
   useEffect(() => {
     if (topic) {
       setContent(topic.ref_content || "");
       setExtractStatusText("");
+      setResolvedLink(readTopicExtractResolvedLink(activeAccountId, topic.id));
     }
-  }, [topic]);
+  }, [topic, activeAccountId]);
 
   const clearStoredJobId = () => {
     if (!activeAccountId || !topic?.id) return;
     writeTopicExtractJobId(activeAccountId, topic.id, "");
   };
 
+  const persistResolvedLink = (nextResolvedLink: string) => {
+    const normalized = String(nextResolvedLink || "").trim();
+    setResolvedLink(normalized);
+    if (!activeAccountId || !topic?.id) return;
+    writeTopicExtractResolvedLink(activeAccountId, topic.id, normalized);
+  };
+
   const applyExtractResult = (data: any) => {
     const transcriptContent = typeof data?.content === "string" ? data.content.trim() : "";
     const debugText = buildExtractDebugText(data?.extract_debug);
+    const nextResolvedLink = getResolvedExtractLink(data);
+    if (nextResolvedLink) {
+      persistResolvedLink(nextResolvedLink);
+    }
     const isTitleDescFallback = data?.extract_fallback?.source === "title_desc_fallback";
     const fallbackContent = typeof data?.fallback_content === "string" && data.fallback_content.trim()
       ? data.fallback_content.trim()
@@ -996,6 +1036,10 @@ function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
       if (job?.status === "failed") {
         const debugText = buildExtractDebugText(job?.debug_json);
         const failedMessage = String(job?.error_message || "提取失败");
+        const nextResolvedLink = getResolvedExtractLink(job);
+        if (nextResolvedLink) {
+          persistResolvedLink(nextResolvedLink);
+        }
         setExtractStatusText(/已失效/.test(failedMessage) ? "上次提取任务已失效，可重新点击提取" : "提取失败");
         clearStoredJobId();
         if (!options?.silentOnFailed) {
@@ -1102,6 +1146,14 @@ function TopicCopyDrawer({ topic, onClose, onUpdate, activeAccountId }: any) {
               {extracting ? <Loader2 size={16} className="spin mr-2" /> : <FileText size={16} className="mr-2" />}
               {extracting ? "提取中..." : "提取"}
             </Button>
+          </div>
+          <div className="topic-copy-toolbar mt-2 items-center">
+            <div className="w-24 shrink-0 text-xs text-muted-foreground">解析后链接</div>
+            <Input
+              readOnly
+              value={resolvedLink || "未解析出链接"}
+              className="bg-muted text-muted-foreground flex-1"
+            />
           </div>
           {extractStatusText ? (
             <div className="text-xs text-muted-foreground mt-2">{extractStatusText}</div>
