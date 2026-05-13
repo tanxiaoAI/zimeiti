@@ -100,6 +100,16 @@ function buildLlmCallError(message, meta = {}) {
   return error;
 }
 
+function getUpstreamUnavailableMessage(apiMode, actualModelName) {
+  if (apiMode === "gpts-messages" || /claude/i.test(String(actualModelName || ""))) {
+    return "API Error: 上游 Claude 服务暂时不可用，请稍后重试或切换模型";
+  }
+  if (apiMode === "native-gemini" || /gemini/i.test(String(actualModelName || ""))) {
+    return "API Error: 上游 Gemini 服务暂时不可用，请稍后重试或切换模型";
+  }
+  return "API Error: 上游模型服务暂时不可用，请稍后重试或切换模型";
+}
+
 function buildPositioningInstruction(systemInstruction, currentProfile) {
   return `${systemInstruction || "你是账号定位专家。"}
       
@@ -571,7 +581,7 @@ async function callLlmWithPrompt(API_URL, actualModelName, apiConfig, systemInst
       throw buildLlmCallError("API Error: 504 网关超时，请稍后重试或切换模型", errorMeta);
     }
     if (response.status === 570 || response.status === 520 || response.status === 522 || response.status === 524) {
-      throw buildLlmCallError("API Error: 上游 Claude 服务暂时不可用，请稍后重试或切换模型", errorMeta);
+      throw buildLlmCallError(getUpstreamUnavailableMessage(apiMode, actualModelName), errorMeta);
     }
     throw buildLlmCallError(`API Error: ${response.status} ${compactError || "请求失败"}`, errorMeta);
   }

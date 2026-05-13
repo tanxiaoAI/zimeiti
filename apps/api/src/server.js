@@ -2543,7 +2543,7 @@ app.post("/api/v1/projects/:projectId/topic-library/:id/content-production/gener
       project_id,
       feature: "content_production.generate",
       provider: "llm",
-      mode: null,
+      mode: e.apiMode || null,
       request_id,
       status: "error",
       request_json: {
@@ -2555,7 +2555,14 @@ app.post("/api/v1/projects/:projectId/topic-library/:id/content-production/gener
         prompt_preview: buildPreviewText(normalizedInstruction)
       },
       response_json: {
-        error: e.message
+        error: e.message,
+        api_mode: e.apiMode || null,
+        actual_model: e.actualModelName || null,
+        api_url: e.apiUrl || null,
+        upstream_provider: e.upstreamProvider || null,
+        upstream_status: typeof e.upstreamStatus === "number" ? e.upstreamStatus : null,
+        upstream_body_preview: e.upstreamBodyPreview || null,
+        timeout_ms: typeof e.timeoutMs === "number" ? e.timeoutMs : null
       }
     });
     res.status(500).json(fail({ code: ErrorCodes.INTERNAL_ERROR, message: "内容生产失败：" + e.message }, request_id));
