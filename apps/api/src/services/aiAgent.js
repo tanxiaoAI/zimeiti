@@ -11,6 +11,8 @@ const GPTS_MESSAGES_MODELS = new Set([
   "claude-sonnet-4-6-thinking"
 ]);
 
+const LLM_UPSTREAM_CIRCUITS = new Map();
+
 const MODEL_PRICING_USD_PER_MILLION = {
   "claude-opus-4-6": { input: 5, output: 25 },
   "claude-opus-4-7": { input: 5, output: 25 },
@@ -110,6 +112,69 @@ function getUpstreamUnavailableMessage(apiMode, actualModelName) {
   return "API Error: 上游模型服务暂时不可用，请稍后重试或切换模型";
 }
 
+function shouldTrackGatewayFailure(status) {
+  return status === 504 || status === 520 || status === 522 || status === 524 || status === 570;
+}
+
+function getCircuitSettings() {
+  return {
+    threshold: Math.max(1, Number(process.env.LLM_UPSTREAM_CIRCUIT_THRESHOLD || 2)),
+    cooldownMs: Math.max(10_000, Number(process.env.LLM_UPSTREAM_CIRCUIT_COOLDOWN_MS || 300_000))
+  };
+}
+
+function getCircuitKey(apiConfig) {
+  return `${apiConfig.apiMode}:${apiConfig.useGptsMessagesApi ? "messages" : apiConfig.useGptsChatApi ? "chat" : "native"}`;
+}
+
+function getCircuitState(circuitKey) {
+  const now = Date.now();
+  const state = LLM_UPSTREAM_CIRCUITS.get(circuitKey);
+  if (!state) {
+    return { failures: 0, openedUntil: 0, lastStatus: null };
+  }
+  if (state.openedUntil && state.openedUntil <= now) {
+    LLM_UPSTREAM_CIRCUITS.delete(circuitKey);
+    return { failures: 0, openedUntil: 0, lastStatus: null };
+  }
+  return state;
+}
+
+function recordCircuitSuccess(circuitKey) {
+  LLM_UPSTREAM_CIRCUITS.delete(circuitKey);
+}
+
+function recordCircuitFailure(circuitKey, status) {
+  const settings = getCircuitSettings();
+  const previous = getCircuitState(circuitKey);
+  const failures = Number(previous.failures || 0) + 1;
+  const next = {
+    failures,
+    lastStatus: status || null,
+    openedUntil: failures >= settings.threshold ? Date.now() + settings.cooldownMs : 0
+  };
+  LLM_UPSTREAM_CIRCUITS.set(circuitKey, next);
+  return next;
+}
+
+function buildCircuitOpenError(apiConfig, actualModelName, timeoutMs, circuitState) {
+  const waitSeconds = Math.max(1, Math.ceil((Number(circuitState?.openedUntil || 0) - Date.now()) / 1000));
+  return buildLlmCallError(`API Error: GPTS 上游 ${apiConfig.apiMode} 连续失败，已暂停请求约 ${waitSeconds}s，请稍后重试或切换模型`, {
+    apiMode: apiConfig.apiMode,
+    modelName: apiConfig.modelName,
+    actualModelName,
+    apiUrl: apiConfig.useGptsChatApi
+      ? `${GPTS_API_BASE_URL}/v1/chat/completions`
+      : apiConfig.useGptsMessagesApi
+        ? `${GPTS_API_BASE_URL}/v1/messages`
+        : `https://api.ricoxueai.cn/v1beta/models/${actualModelName}:generateContent`,
+    upstreamProvider: apiConfig.apiMode === "native-gemini" ? "native-gemini" : "gpts",
+    upstreamStatus: typeof circuitState?.lastStatus === "number" ? circuitState.lastStatus : null,
+    upstreamBodyPreview: "circuit-open",
+    timeoutMs
+  });
+}
+
 function buildPositioningInstruction(systemInstruction, currentProfile) {
   return `${systemInstruction || "你是账号定位专家。"}
       
@@ -151,6 +216,13 @@ function buildChatInstruction(systemInstruction) {
 
 function resolveContentProductionRequestOptions(targetModel) {
   const normalizedModel = String(targetModel || "").trim();
+  if (normalizedModel === "gpt-5.4") {
+    return {
+      maxTokens: Number(process.env.CONTENT_PRODUCTION_GPT54_MAX_TOKENS || 2048),
+      timeoutMs: Number(process.env.CONTENT_PRODUCTION_GPT54_TIMEOUT_MS || 120000)
+    };
+  }
+
   if (normalizedModel === "claude-opus-4-6" || normalizedModel === "claude-opus-4-7") {
     return {
       // GPTS upstream is unstable for long-form Opus generations; tighter caps are more reliable.
@@ -466,6 +538,7 @@ async function callLlmWithPrompt(API_URL, actualModelName, apiConfig, systemInst
   const { useGptsChatApi, useGptsMessagesApi, apiMode, modelName } = apiConfig;
   const maxTokens = Number(requestOptions.maxTokens || 8192);
   const upstreamProvider = apiMode === "native-gemini" ? "native-gemini" : "gpts";
+  const circuitKey = getCircuitKey(apiConfig);
   let payload, headers;
 
   if (useGptsChatApi) {
@@ -531,6 +604,10 @@ async function callLlmWithPrompt(API_URL, actualModelName, apiConfig, systemInst
   }
 
   const timeoutMs = Number(requestOptions.timeoutMs || process.env.LLM_REQUEST_TIMEOUT_MS || 90000);
+  const circuitState = getCircuitState(circuitKey);
+  if (upstreamProvider === "gpts" && circuitState.openedUntil && circuitState.openedUntil > Date.now()) {
+    throw buildCircuitOpenError(apiConfig, actualModelName, timeoutMs, circuitState);
+  }
 
   const requestOnce = async () => {
     const controller = new AbortController();
@@ -544,6 +621,9 @@ async function callLlmWithPrompt(API_URL, actualModelName, apiConfig, systemInst
       });
     } catch (error) {
       if (error?.name === "AbortError") {
+        if (upstreamProvider === "gpts") {
+          recordCircuitFailure(circuitKey, 504);
+        }
         throw buildLlmCallError(`API Timeout: ${Math.round(timeoutMs / 1000)}s`, {
           apiMode,
           modelName,
@@ -554,6 +634,9 @@ async function callLlmWithPrompt(API_URL, actualModelName, apiConfig, systemInst
           upstreamBodyPreview: null,
           timeoutMs
         });
+      }
+      if (upstreamProvider === "gpts") {
+        recordCircuitFailure(circuitKey, null);
       }
       throw error;
     } finally {
@@ -578,15 +661,27 @@ async function callLlmWithPrompt(API_URL, actualModelName, apiConfig, systemInst
       timeoutMs
     };
     if (response.status === 504) {
+      if (upstreamProvider === "gpts" && shouldTrackGatewayFailure(response.status)) {
+        recordCircuitFailure(circuitKey, response.status);
+      }
       throw buildLlmCallError("API Error: 504 网关超时，请稍后重试或切换模型", errorMeta);
     }
     if (response.status === 570 || response.status === 520 || response.status === 522 || response.status === 524) {
+      if (upstreamProvider === "gpts" && shouldTrackGatewayFailure(response.status)) {
+        recordCircuitFailure(circuitKey, response.status);
+      }
       throw buildLlmCallError(getUpstreamUnavailableMessage(apiMode, actualModelName), errorMeta);
+    }
+    if (upstreamProvider === "gpts") {
+      recordCircuitSuccess(circuitKey);
     }
     throw buildLlmCallError(`API Error: ${response.status} ${compactError || "请求失败"}`, errorMeta);
   }
 
   const data = await response.json();
+  if (upstreamProvider === "gpts") {
+    recordCircuitSuccess(circuitKey);
+  }
   let text = "";
   let usage = null;
 
