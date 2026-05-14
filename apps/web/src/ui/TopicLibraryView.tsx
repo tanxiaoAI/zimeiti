@@ -13,6 +13,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 const MODEL_OPTIONS = [
   "gpt-5.4",
   "gpt-5.5",
+  "cc-claude",
   "claude-opus-4-6",
   "claude-sonnet-4-6-thinking",
   "gemini-3-flash-preview",
@@ -20,7 +21,7 @@ const MODEL_OPTIONS = [
 ];
 
 const TOPIC_LIBRARY_PROMPT_FALLBACK = "你是一个资深自媒体内容分析师，请对提供的文案进行深度拆解分析。";
-const TOPIC_LIBRARY_DEFAULT_MODELS = ["gpt-5.5", "claude-opus-4-6", "gpts-gemini-3.1-pro-preview"];
+const TOPIC_LIBRARY_DEFAULT_MODELS = ["gpt-5.5", "cc-claude", "gpts-gemini-3.1-pro-preview"];
 const ANALYSIS_RESULT_FIELDS = ["ai_analysis_1", "ai_analysis_2", "ai_analysis_3"] as const;
 
 type TopicAiResultEntry = {

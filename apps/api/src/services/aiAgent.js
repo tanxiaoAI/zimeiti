@@ -11,6 +11,10 @@ const GPTS_MESSAGES_MODELS = new Set([
   "claude-sonnet-4-6-thinking"
 ]);
 
+const ANTHROPIC_DIRECT_MODELS = new Set([
+  "cc-claude"
+]);
+
 const LLM_UPSTREAM_CIRCUITS = new Map();
 
 const MODEL_PRICING_USD_PER_MILLION = {
@@ -21,7 +25,11 @@ const MODEL_PRICING_USD_PER_MILLION = {
   "gpt-5.4": { input: 2.5, output: 15 },
   "gpt-5.5": { input: 5, output: 30 },
   "gemini-3.1-pro-preview": { input: 2, output: 12 },
-  "gpts-gemini-3.1-pro-preview": { input: 2, output: 12 }
+  "gpts-gemini-3.1-pro-preview": { input: 2, output: 12 },
+  "cc-claude": {
+    input: Number(process.env.CC_CLAUDE_PRICE_INPUT_PER_MILLION || 3),
+    output: Number(process.env.CC_CLAUDE_PRICE_OUTPUT_PER_MILLION || 15)
+  }
 };
 
 function normalizeEnvValue(value) {
@@ -60,17 +68,28 @@ function isNativeGeminiModel(modelName) {
   return modelName === "gemini-3.1-flash-lite-preview" || modelName === "gemini-3.1-pro-preview";
 }
 
+function isAnthropicDirectModel(modelName) {
+  return ANTHROPIC_DIRECT_MODELS.has(modelName);
+}
+
+function getAnthropicBaseUrl() {
+  return getRequiredEnv("ANTHROPIC_BASE_URL").replace(/\/$/, "");
+}
+
 function resolveModelConfig(targetModel) {
   const modelName = targetModel || DEFAULT_MODEL;
   const actualModelName = GPTS_MODEL_ALIASES[modelName] || modelName;
-  const apiMode = isNativeGeminiModel(modelName)
-    ? "native-gemini"
-    : (GPTS_MESSAGES_MODELS.has(modelName) ? "gpts-messages" : "gpts-chat");
+  const apiMode = isAnthropicDirectModel(modelName)
+    ? "anthropic-direct"
+    : isNativeGeminiModel(modelName)
+      ? "native-gemini"
+      : (GPTS_MESSAGES_MODELS.has(modelName) ? "gpts-messages" : "gpts-chat");
 
   return {
     modelName,
     actualModelName,
     apiMode,
+    useAnthropicDirectApi: apiMode === "anthropic-direct",
     useGptsChatApi: apiMode === "gpts-chat",
     useGptsMessagesApi: apiMode === "gpts-messages"
   };
@@ -247,10 +266,12 @@ function resolveContentProductionRequestOptions(targetModel) {
 
 export async function* streamChatWithGemini(systemInstruction, history, newMessage, currentProfile, projectId, targetModel, options = {}) {
   const modelConfig = resolveModelConfig(targetModel);
-  const { actualModelName, useGptsChatApi, useGptsMessagesApi, apiMode } = modelConfig;
+  const { actualModelName, useAnthropicDirectApi, useGptsChatApi, useGptsMessagesApi, apiMode } = modelConfig;
   const profileMode = options.profileMode !== false;
 
-  const API_URL = useGptsChatApi
+  const API_URL = useAnthropicDirectApi
+    ? `${getAnthropicBaseUrl()}/v1/messages`
+    : useGptsChatApi
     ? `${GPTS_API_BASE_URL}/v1/chat/completions`
     : useGptsMessagesApi
       ? `${GPTS_API_BASE_URL}/v1/messages`
@@ -291,6 +312,29 @@ export async function* streamChatWithGemini(systemInstruction, history, newMessa
     };
     headers = {
       "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`
+    };
+  } else if (useAnthropicDirectApi) {
+    const apiKey = getRequiredEnv("ANTHROPIC_AUTH_TOKEN");
+    const messages = [];
+    for (const msg of history) {
+      messages.push({
+        role: msg.role === 'model' ? 'assistant' : 'user',
+        content: msg.content
+      });
+    }
+    messages.push({ role: 'user', content: newMessage });
+
+    payload = {
+      model: actualModelName,
+      system: instruction,
+      messages,
+      max_tokens: 8192
+    };
+    headers = {
+      "Content-Type": "application/json",
+      "anthropic-version": "2023-06-01",
+      "x-api-key": apiKey,
       "Authorization": `Bearer ${apiKey}`
     };
   } else if (useGptsMessagesApi) {
@@ -335,7 +379,7 @@ export async function* streamChatWithGemini(systemInstruction, history, newMessa
   let fullText = "";
   let usage = null;
 
-  if (useGptsMessagesApi) {
+  if (useAnthropicDirectApi || useGptsMessagesApi) {
     const data = await response.json();
     fullText = extractAnthropicText(data.content);
     usage = data.usage
@@ -452,9 +496,11 @@ export async function* streamChatWithGemini(systemInstruction, history, newMessa
 
 export async function analyzeVideoWithGemini(systemInstruction, teardown, targetModel) {
   const modelConfig = resolveModelConfig(targetModel);
-  const { actualModelName, useGptsChatApi, useGptsMessagesApi } = modelConfig;
+  const { actualModelName, useAnthropicDirectApi, useGptsChatApi, useGptsMessagesApi } = modelConfig;
 
-  const API_URL = useGptsChatApi
+  const API_URL = useAnthropicDirectApi
+    ? `${getAnthropicBaseUrl()}/v1/messages`
+    : useGptsChatApi
     ? `${GPTS_API_BASE_URL}/v1/chat/completions`
     : useGptsMessagesApi
       ? `${GPTS_API_BASE_URL}/v1/messages`
@@ -471,9 +517,11 @@ export async function analyzeVideoWithGemini(systemInstruction, teardown, target
 
 export async function analyzeTopicLibraryContent(systemInstruction, topicData, targetModel) {
   const modelConfig = resolveModelConfig(targetModel);
-  const { actualModelName, useGptsChatApi, useGptsMessagesApi } = modelConfig;
+  const { actualModelName, useAnthropicDirectApi, useGptsChatApi, useGptsMessagesApi } = modelConfig;
 
-  const API_URL = useGptsChatApi
+  const API_URL = useAnthropicDirectApi
+    ? `${getAnthropicBaseUrl()}/v1/messages`
+    : useGptsChatApi
     ? `${GPTS_API_BASE_URL}/v1/chat/completions`
     : useGptsMessagesApi
       ? `${GPTS_API_BASE_URL}/v1/messages`
@@ -497,10 +545,12 @@ export async function analyzeTopicLibraryContent(systemInstruction, topicData, t
 
 export async function generateContentProductionStep(systemInstruction, stepData, targetModel) {
   const modelConfig = resolveModelConfig(targetModel);
-  const { actualModelName, useGptsChatApi, useGptsMessagesApi } = modelConfig;
+  const { actualModelName, useAnthropicDirectApi, useGptsChatApi, useGptsMessagesApi } = modelConfig;
   const requestOptions = resolveContentProductionRequestOptions(targetModel);
 
-  const API_URL = useGptsChatApi
+  const API_URL = useAnthropicDirectApi
+    ? `${getAnthropicBaseUrl()}/v1/messages`
+    : useGptsChatApi
     ? `${GPTS_API_BASE_URL}/v1/chat/completions`
     : useGptsMessagesApi
       ? `${GPTS_API_BASE_URL}/v1/messages`
@@ -535,9 +585,13 @@ export async function generateContentProductionStep(systemInstruction, stepData,
 }
 
 async function callLlmWithPrompt(API_URL, actualModelName, apiConfig, systemInstruction, promptText, cover_image = null, requestOptions = {}) {
-  const { useGptsChatApi, useGptsMessagesApi, apiMode, modelName } = apiConfig;
+  const { useAnthropicDirectApi, useGptsChatApi, useGptsMessagesApi, apiMode, modelName } = apiConfig;
   const maxTokens = Number(requestOptions.maxTokens || 8192);
-  const upstreamProvider = apiMode === "native-gemini" ? "native-gemini" : "gpts";
+  const upstreamProvider = apiMode === "native-gemini"
+    ? "native-gemini"
+    : apiMode === "anthropic-direct"
+      ? "anthropic-direct"
+      : "gpts";
   const circuitKey = getCircuitKey(apiConfig);
   let payload, headers;
 
@@ -560,6 +614,26 @@ async function callLlmWithPrompt(API_URL, actualModelName, apiConfig, systemInst
     };
     headers = {
       "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`
+    };
+  } else if (useAnthropicDirectApi) {
+    const apiKey = getRequiredEnv("ANTHROPIC_AUTH_TOKEN");
+    let userContent = `${promptText}`;
+    if (cover_image) {
+      userContent += `\n\n参考图片链接：${cover_image}`;
+    }
+    payload = {
+      model: actualModelName,
+      system: systemInstruction,
+      messages: [
+        { role: 'user', content: userContent }
+      ],
+      max_tokens: maxTokens
+    };
+    headers = {
+      "Content-Type": "application/json",
+      "anthropic-version": "2023-06-01",
+      "x-api-key": apiKey,
       "Authorization": `Bearer ${apiKey}`
     };
   } else if (useGptsMessagesApi) {
@@ -694,7 +768,7 @@ async function callLlmWithPrompt(API_URL, actualModelName, apiConfig, systemInst
         total_tokens: data.usage.total_tokens || ((data.usage.prompt_tokens || 0) + (data.usage.completion_tokens || 0))
       };
     }
-  } else if (useGptsMessagesApi) {
+  } else if (useAnthropicDirectApi || useGptsMessagesApi) {
     text = extractAnthropicText(data.content);
     if (data.usage) {
       usage = {

@@ -1302,6 +1302,7 @@ function ConfigView({ activeAccountId }: { activeAccountId: string }) {
             >
               <option value="gpt-5.4">gpt-5.4</option>
               <option value="gpt-5.5">gpt-5.5</option>
+              <option value="cc-claude">cc-claude</option>
               <option value="claude-opus-4-6">claude-opus-4-6</option>
               <option value="claude-sonnet-4-6-thinking">claude-sonnet-4-6-thinking</option>
               <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
@@ -2567,6 +2568,7 @@ function EditorView({
                 >
                   <option value="gpt-5.4">gpt-5.4</option>
                   <option value="gpt-5.5">gpt-5.5</option>
+                  <option value="cc-claude">cc-claude</option>
                   <option value="claude-opus-4-6">claude-opus-4-6</option>
                   <option value="claude-sonnet-4-6-thinking">claude-sonnet-4-6-thinking</option>
                   <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
